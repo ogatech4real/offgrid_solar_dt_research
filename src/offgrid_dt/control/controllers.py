@@ -60,7 +60,13 @@ class StaticPriorityController(BaseController):
         if inp.soc <= cfg.soc_min + 1e-6:
             shed = list(set(deferred))
             deferred = []
-        return ControlDecision(0.0, 0.0, serve, deferred, shed)
+        return ControlDecision(
+            charge_kw=0.0,
+            discharge_kw=0.0,
+            served_task_ids=serve,
+            deferred_task_ids=deferred,
+            shed_task_ids=shed,
+        )
 
 
 class RuleBasedController(BaseController):

@@ -18,6 +18,25 @@ class OpenWeatherSolarClient:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
 
+    def geocode(self, query: str, limit: int = 5) -> List[dict]:
+        """Resolve a place name to candidate coordinates using OpenWeather Geocoding API.
+
+        Returns a list of dicts with keys like: name, lat, lon, country, state.
+        """
+        url = f"{self.base_url}/geo/1.0/direct"
+        r = requests.get(url, params={"q": query, "limit": limit, "appid": self.api_key}, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+
+    def reverse_geocode(self, lat: float, lon: float, limit: int = 1) -> List[dict]:
+        """Resolve coordinates to a human-readable location."""
+        url = f"{self.base_url}/geo/1.0/reverse"
+        r = requests.get(url, params={"lat": lat, "lon": lon, "limit": limit, "appid": self.api_key}, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+
     def fetch_irradiance_forecast(self, lat: float, lon: float, hours: int = 24) -> List[IrradiancePoint]:
         candidates = [
             f"{self.base_url}/data/2.5/solar/forecast",

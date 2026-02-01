@@ -8,3 +8,4 @@ python-dateutil>=2.9
 plotly>=5.18
 tenacity>=8.2
 openai>=1.10.0
+reportlab>=4.0
