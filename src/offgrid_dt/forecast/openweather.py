@@ -37,6 +37,41 @@ class OpenWeatherSolarClient:
         data = r.json()
         return data if isinstance(data, list) else []
 
+    def current_weather(self, lat: float, lon: float, units: str = "metric") -> dict:
+        """Fetch current weather conditions using OpenWeather Current Weather endpoint.
+
+        Returns a dict with keys:
+          - description, main, icon
+          - temperature_c, humidity_pct, cloud_cover_pct
+          - wind_speed_mps
+          - sunrise_ts, sunset_ts (unix)
+        """
+        url = f"{self.base_url}/data/2.5/weather"
+        r = requests.get(url, params={
+            "lat": lat,
+            "lon": lon,
+            "appid": self.api_key,
+            "units": units,
+        }, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        weather0 = (data.get("weather") or [{}])[0]
+        main = data.get("main") or {}
+        wind = data.get("wind") or {}
+        clouds = data.get("clouds") or {}
+        sys = data.get("sys") or {}
+        return {
+            "main": weather0.get("main", ""),
+            "description": weather0.get("description", ""),
+            "icon": weather0.get("icon", ""),
+            "temperature_c": float(main.get("temp", 0.0) or 0.0),
+            "humidity_pct": float(main.get("humidity", 0.0) or 0.0),
+            "cloud_cover_pct": float(clouds.get("all", 0.0) or 0.0),
+            "wind_speed_mps": float(wind.get("speed", 0.0) or 0.0),
+            "sunrise_ts": int(sys.get("sunrise", 0) or 0),
+            "sunset_ts": int(sys.get("sunset", 0) or 0),
+        }
+
     def fetch_irradiance_forecast(self, lat: float, lon: float, hours: int = 24) -> List[IrradiancePoint]:
         candidates = [
             f"{self.base_url}/data/2.5/solar/forecast",
@@ -128,40 +163,3 @@ def synthetic_irradiance_forecast(
 
         points.append(IrradiancePoint(ts=ts, ghi_wm2=float(max(0.0, ghi))))
     return points
-
-
-    def current_weather(self, lat: float, lon: float, units: str = "metric") -> dict:
-        """Fetch current weather conditions using OpenWeather Current Weather endpoint.
-
-        Returns a dict with keys:
-          - description, main, icon
-          - temperature_c, humidity_pct, cloud_cover_pct
-          - wind_speed_mps
-          - sunrise_ts, sunset_ts (unix)
-        """
-        url = f"{self.base_url}/data/2.5/weather"
-        r = requests.get(url, params={
-            "lat": lat,
-            "lon": lon,
-            "appid": self.api_key,
-            "units": units,
-        }, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        weather0 = (data.get("weather") or [{}])[0]
-        main = data.get("main") or {}
-        wind = data.get("wind") or {}
-        clouds = data.get("clouds") or {}
-        sys = data.get("sys") or {}
-        return {
-            "main": weather0.get("main", ""),
-            "description": weather0.get("description", ""),
-            "icon": weather0.get("icon", ""),
-            "temperature_c": float(main.get("temp", 0.0) or 0.0),
-            "humidity_pct": float(main.get("humidity", 0.0) or 0.0),
-            "cloud_cover_pct": float(clouds.get("all", 0.0) or 0.0),
-            "wind_speed_mps": float(wind.get("speed", 0.0) or 0.0),
-            "sunrise_ts": int(sys.get("sunrise", 0) or 0),
-            "sunset_ts": int(sys.get("sunset", 0) or 0),
-        }
-

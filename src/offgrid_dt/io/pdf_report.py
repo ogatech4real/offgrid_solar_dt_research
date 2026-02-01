@@ -421,11 +421,18 @@ def build_two_day_plan_pdf_from_logs(
     guidance_jsonl_path: str,
     title: str = "Solar-first Household Plan (Today + Tomorrow)",
     weather_summary: Optional[Dict[str, object]] = None,
+    system_summary_override: Optional[Dict[str, str]] = None,
 ) -> bytes:
     """Convenience wrapper: build a two-day PDF from the standard DT logs.
 
     Keeps the UI simple and ensures the downloadable artifact is consistent with the replay logs.
+    State CSV columns: timestamp, pv_now_kw, soc_now, kpi_CLSR, kpi_Blackout_minutes, kpi_SAR,
+    kpi_Solar_utilization, kpi_Battery_throughput_kwh, served_task_ids, etc.
     """
+    ADVISORY_DISCLAIMER = (
+        "This plan is advisory only. No automatic control of equipment. "
+        "Use guidance with household discretion. Logs remain the source of truth for reproducibility."
+    )
     df = pd.read_csv(state_csv_path)
     if df.empty:
         return build_two_day_plan_pdf(
@@ -434,25 +441,29 @@ def build_two_day_plan_pdf_from_logs(
             kpis={},
             recommendations_today={"headline": "No data", "explanation": "Run the digital twin to generate a plan."},
             schedule_rows_today=[],
-            notes="No simulation data was available to generate a plan.",
+            notes=ADVISORY_DISCLAIMER,
         )
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp").reset_index(drop=True)
+    timestep_minutes = 15  # standard DT step; not stored in CSV
 
     gdf = pd.read_json(guidance_jsonl_path, lines=True)
-    if not gdf.empty:
+    if not gdf.empty and "timestamp" in gdf.columns:
         gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)
         gdf = gdf.sort_values("timestamp").reset_index(drop=True)
 
-    # System summary (simple, non-technical)
-    first = df.iloc[0]
-    system_summary = {
-        "Location": str(first.get("location_name", "")) or "Configured location",
-        "PV capacity": f"{float(first.get('pv_capacity_kw', 0.0)):.1f} kW",
-        "Battery": f"{float(first.get('battery_capacity_kwh', 0.0)):.1f} kWh",
-        "Inverter limit": f"{float(first.get('inverter_max_kw', 0.0)):.1f} kW",
-    }
+    # System summary: use override from UI (config) when provided; else placeholder
+    if system_summary_override:
+        system_summary = dict(system_summary_override)
+    else:
+        first = df.iloc[0]
+        system_summary = {
+            "Location": str(first.get("location_name", "")) or "From run",
+            "PV capacity": f"{float(first.get('pv_capacity_kw', 0.0)):.1f} kW",
+            "Battery": f"{float(first.get('battery_capacity_kwh', 0.0)):.1f} kWh",
+            "Inverter limit": f"{float(first.get('inverter_max_kw', 0.0)):.1f} kW",
+        }
 
     if weather_summary:
         desc = str(weather_summary.get("description", "")).title()
@@ -470,14 +481,14 @@ def build_two_day_plan_pdf_from_logs(
         if w is not None:
             system_summary["Wind"] = f"{float(w):.1f} m/s"
 
-    # KPI snapshot: use last row as cumulative view
+    # KPI snapshot: use last row; state CSV columns are kpi_CLSR, kpi_Blackout_minutes, kpi_SAR, kpi_Solar_utilization, kpi_Battery_throughput_kwh
     last = df.iloc[-1]
     kpis = {
-        "Critical reliability (CLSR)": f"{100*float(last.get('clsr_running', 0.0)):.1f} %",
-        "Blackout time (critical)": f"{float(last.get('blackout_minutes_running', 0.0)):.0f} minutes",
-        "Solar autonomy (SAR)": f"{100*float(last.get('sar_running', 0.0)):.1f} %",
-        "Solar utilization": f"{100*float(last.get('solar_util_running', 0.0)):.1f} %",
-        "Battery wear proxy": f"{float(last.get('throughput_kwh_running', 0.0)):.2f} kWh throughput",
+        "Critical reliability (CLSR)": f"{100*float(last.get('kpi_CLSR', 0.0)):.1f} %",
+        "Blackout time (critical)": f"{float(last.get('kpi_Blackout_minutes', 0.0)):.0f} minutes",
+        "Solar autonomy (SAR)": f"{100*float(last.get('kpi_SAR', 0.0)):.1f} %",
+        "Solar utilization": f"{100*float(last.get('kpi_Solar_utilization', 0.0)):.1f} %",
+        "Battery wear proxy": f"{float(last.get('kpi_Battery_throughput_kwh', 0.0)):.2f} kWh throughput",
     }
 
     # Appliance id -> name mapping inferred from served_task_ids (best-effort)
@@ -493,46 +504,58 @@ def build_two_day_plan_pdf_from_logs(
 
     appliance_id_to_name = _infer_ids(df.get("served_task_ids", pd.Series(dtype=str)))
 
-    # Recommendations (today & tomorrow): first entry per day
-    recommendations_today = {"headline": "No recommendation", "explanation": "Guidance log not available."}
+    # Recommendations (today & tomorrow): use timestamp from guidance if present, else align by row index with state
+    recommendations_today = {"headline": "No recommendation", "explanation": "Guidance log not available.", "risk": ""}
     recommendations_tomorrow = None
+    days = []
 
     if not gdf.empty:
-        gdf["day"] = gdf["timestamp"].dt.floor("D")
-        days = sorted(gdf["day"].unique())
-        if days:
-            g0 = gdf[gdf["day"] == days[0]].iloc[0]
-            recommendations_today = {
-                "headline": str(g0.get("headline", "")),
-                "explanation": str(g0.get("explanation", "")),
-                "risk": str(g0.get("risk_level", "")),
+        if "timestamp" in gdf.columns:
+            gdf["day"] = pd.to_datetime(gdf["timestamp"], utc=True).dt.floor("D")
+            days = sorted(gdf["day"].unique())
+        else:
+            # Align by index: same number of rows as state; derive day from state CSV
+            days = sorted(df["timestamp"].dt.floor("D").unique())
+            if len(days) >= 1 and len(gdf) >= 1:
+                gdf["day"] = df["timestamp"].dt.floor("D").iloc[: len(gdf)].values
+                days = sorted(pd.Series(gdf["day"]).unique())
+    def _reasons_str(rc) -> str:
+        if isinstance(rc, list):
+            return ", ".join(str(x) for x in rc)
+        return str(rc) if rc else ""
+
+    if days:
+        g0 = gdf[gdf["day"] == days[0]].iloc[0]
+        recommendations_today = {
+            "headline": str(g0.get("headline", "")),
+            "explanation": str(g0.get("explanation", "")),
+            "risk": str(g0.get("risk_level", "")),
+            "reasons": _reasons_str(g0.get("reason_codes", [])),
+        }
+        if len(days) > 1:
+            g1 = gdf[gdf["day"] == days[1]].iloc[0]
+            recommendations_tomorrow = {
+                "headline": str(g1.get("headline", "")),
+                "explanation": str(g1.get("explanation", "")),
+                "risk": str(g1.get("risk_level", "")),
+                "reasons": _reasons_str(g1.get("reason_codes", [])),
             }
-            if len(days) > 1:
-                g1 = gdf[gdf["day"] == days[1]].iloc[0]
-                recommendations_tomorrow = {
-                    "headline": str(g1.get("headline", "")),
-                    "explanation": str(g1.get("explanation", "")),
-                    "risk": str(g1.get("risk_level", "")),
-                }
 
     # Schedules
-    schedule_rows_today = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=0, timestep_minutes=int(df.get("timestep_minutes", pd.Series([15])).iloc[0] if "timestep_minutes" in df.columns else 15))
+    schedule_rows_today = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=0, timestep_minutes=timestep_minutes)
     schedule_rows_tomorrow = None
     tomorrow_outlook = None
 
     if df["timestamp"].dt.floor("D").nunique() > 1:
-        schedule_rows_tomorrow = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=1, timestep_minutes=int(df.get("timestep_minutes", pd.Series([15])).iloc[0] if "timestep_minutes" in df.columns else 15))
-
-        # Simple tomorrow outlook: expected solar energy (kWh) and typical risk indicator
-        # Compute from pv_kw over day 2
+        schedule_rows_tomorrow = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=1, timestep_minutes=timestep_minutes)
         df2 = df.copy()
         df2["day"] = df2["timestamp"].dt.floor("D")
-        days = sorted(df2["day"].unique())
-        if len(days) > 1:
-            d1 = days[1]
+        days_list = sorted(df2["day"].unique())
+        if len(days_list) > 1:
+            d1 = days_list[1]
             day_df = df2[df2["day"] == d1]
-            dt_hours = (int(df.get("timestep_minutes", pd.Series([15])).iloc[0]) / 60.0) if "timestep_minutes" in df.columns else 0.25
-            pv_kwh = float(day_df["pv_kw"].astype(float).sum() * dt_hours)
+            dt_hours = timestep_minutes / 60.0
+            pv_kwh = float(day_df["pv_now_kw"].astype(float).sum() * dt_hours)
             load_kwh = float(day_df["load_requested_kw"].astype(float).sum() * dt_hours)
             tomorrow_outlook = {
                 "Expected solar energy": f"{pv_kwh:.1f} kWh",
@@ -548,5 +571,5 @@ def build_two_day_plan_pdf_from_logs(
         recommendations_tomorrow=recommendations_tomorrow,
         schedule_rows_tomorrow=schedule_rows_tomorrow,
         tomorrow_outlook=tomorrow_outlook,
-        notes="Plans are advisory and will update as conditions change.",
+        notes=ADVISORY_DISCLAIMER,
     )

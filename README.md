@@ -72,6 +72,8 @@ offgrid_solar_dt/
 
 **Security boundary:** the engine lives under `src/offgrid_dt/`. The UI is a consumer that calls engine functions and reads log outputs. Secrets are only accessed via Streamlit secrets and are not written to logs.
 
+**Interface–manuscript alignment:** For UI/UX work, advisory framing, and what the interface must (and must not) do, see [docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md](docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md). This document is the single source of truth for interface development and handover.
+
 ---
 
 ## Quick start (local)

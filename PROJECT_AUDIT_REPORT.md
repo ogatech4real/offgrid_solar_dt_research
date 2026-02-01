@@ -1,13 +1,13 @@
-# Off-grid Solar Digital Twin — Project Audit Report
+# Off-grid Solar Digital Twin — Project Audit Report (Revised)
 
-**Date:** February 1, 2026  
-**Scope:** Full codebase review, README alignment, and recommendations for improvement and enhancement.
+**Date:** February 1, 2026 (revised after manual folder updates)  
+**Scope:** Full codebase re-audit aligned with docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md (handover document); production-readiness pass completed.
 
 ---
 
 ## 1. Executive Summary
 
-The **Off-grid Solar-First Digital Twin (DT)** is a well-scoped prototype for solar-first, grid-independent household energy decision support. It combines a modular digital twin (PV, battery, loads, control), forecast-informed scheduling, deterministic explainability with optional LLM refinement, and a Streamlit dashboard with replay, scheduling visuals, and PDF handouts. The codebase is clean, README and structure match the implementation, and the separation between engine (`src/offgrid_dt/`) and UI (`streamlit_app/`) is clear. This audit summarizes what is in place and recommends concrete improvements and enhancements.
+The **Off-grid Solar-First Digital Twin (DT)** remains a well-scoped prototype for solar-first, grid-independent household energy decision support. Since the previous audit, several improvements have been made: **PV forecast resolution is fixed**, **automated tests exist**, **OpenAI model default is corrected**, **simulator uses structured logging**, and the **Streamlit app has a “Run demo” path and a refactored PDF-from-logs API**. A production-readiness pass (handover alignment) is complete: **openweather orphan fixed** (current_weather on OpenWeatherSolarClient), **PDF-from-logs schema aligned** (kpi_*, pv_now_kw, system_summary_override, timestamp in guidance, advisory disclaimer), **app data contracts fixed** (column names, get_controllers, day_choice, Safe/Caution/Risk, Allowed/Delay/Avoid, simulate(cfg=cfg)). Remaining: **pytest not in pyproject.toml** optional deps, **config package** unused.
 
 ---
 
@@ -15,11 +15,11 @@ The **Off-grid Solar-First Digital Twin (DT)** is a well-scoped prototype for so
 
 - **Purpose:** Advisory decision support for off-grid/solar-first households (e.g. emerging economies, weak or absent grid).
 - **Core components:**
-  1. **Digital twin:** 15-min time-stepped simulation with PV generation, battery SOC, and task-based loads.
+  1. **Digital twin:** 15-min time-stepped simulation with PV, battery SOC, and task-based loads.
   2. **Controllers:** `naive`, `rule_based`, `static_priority`, `forecast_heuristic` (survivability-first).
-  3. **Forecasting:** OpenWeather API (when key is set) or synthetic irradiance template for reproducibility.
+  3. **Forecasting:** OpenWeather API (when key is set) or synthetic irradiance at configurable step resolution.
   4. **Explainability:** Deterministic reason codes and dominant factors; optional OpenAI rewrite for wording only.
-  5. **Streamlit UI:** System config, appliance selection, scenario replay, schedule heatmap, PDF plans (Today + Tomorrow).
+  5. **Streamlit UI:** System config, appliance catalog, scenario replay, schedule heatmap, PDF plans (including build-two-day-from-logs).
 - **Outputs:** `*_state.csv`, `*_guidance.jsonl`, PDF handouts; suitable for experiments, KPIs, and user studies.
 
 ---
@@ -28,139 +28,135 @@ The **Off-grid Solar-First Digital Twin (DT)** is a well-scoped prototype for so
 
 ### 3.1 Architecture and Structure
 
-- **Engine vs UI:** Engine lives under `src/offgrid_dt/`; Streamlit app imports and calls it. Clear boundary and data contract (state logs, structured records).
-- **Modularity:** `dt/` (simulator, battery, load), `forecast/`, `control/`, `xai/`, `metrics/`, `io/` are logically separated.
-- **Data contracts:** Pydantic models (`SystemConfig`, `Appliance`, `TaskInstance`, `ControlDecision`, `Guidance`, `StepRecord`) are used consistently.
-- **Secrets:** API keys only via Streamlit secrets; template provided; README warns against committing real secrets.
+- **Engine vs UI:** Engine under `src/offgrid_dt/`; Streamlit app imports and calls it. Clear boundary.
+- **Modularity:** `dt/`, `forecast/`, `control/`, `xai/`, `metrics/`, `io/` are logically separated.
+- **Data contracts:** Pydantic models used consistently; state CSV and guidance JSONL are the main artifacts.
 
-### 3.2 Functionality
+### 3.2 Fixes and Additions Since Last Audit
 
-- **Simulation:** Closed-loop run with PV, battery update, task serving, inverter/reserve logic, and continuous logging works as described.
-- **Controllers:** Four controllers implemented and selectable; forecast heuristic uses horizon and SOC headroom as intended.
-- **KPIs:** CLSR, blackout minutes, SAR, solar utilization, battery throughput computed and exposed in UI and logs.
-- **Explainability:** Deterministic guidance (risk, reason codes, factors) is always on; OpenAI enhancement is optional and does not change decisions.
-- **UI:** Sidebar config (location, PV/battery/inverter, reserve, horizon, appliances), scenario replay, PV/load/SOC plots, schedule heatmap, appliance advisory, CSV/JSONL/PDF downloads.
-- **CLI:** `scripts/run_simulation.py` runs multi-controller batch and writes logs for experiments.
+| Item | Status |
+|------|--------|
+| **PV forecast resolution** | **Fixed.** `synthetic_irradiance_forecast` now accepts `step_minutes` (e.g. 15); simulator calls it with `dt_minutes` and uses `_resample_to_steps()` so any forecast length (e.g. hourly from OpenWeather) is aligned to `total_steps`. Multi-day runs have correct PV for every step. |
+| **OpenAI model name** | **Fixed.** Default is `gpt-4o-mini` everywhere (README, secrets template, app, simulator). |
+| **Automated tests** | **Added.** `tests/conftest.py`, `test_battery.py`, `test_forecast_resolution.py`, `test_simulation_smoke.py`. Battery bounds, synthetic 15-min resolution, and 3-day simulation with non-zero PV are covered. |
+| **Structured logging** | **Added.** Simulator uses `logging.getLogger("offgrid_dt")` and logs a warning when falling back to synthetic irradiance. |
+| **Typing** | **Fixed.** `simulator.py` uses `Dict[str, Any]` (from `typing`) instead of `any`. |
+| **First-run UX** | **Improved.** App has a “Run demo (2 days)” button that sets London and triggers a run so users can explore the dashboard without manual config. |
+| **README** | **Updated.** Integrity checks include `pytest -q`; openai_model default documented. |
 
-### 3.3 Code Quality
+### 3.3 Test Suite
 
-- Consistent use of type hints, dataclasses, and Pydantic.
-- Docstrings on main APIs (e.g. `simulate`, `update_soc`, `build_plan_pdf`).
-- README accurately describes structure, quick start, deployment, KPIs, limitations, and integrity checks.
+- **conftest.py:** Ensures `src/` is on `sys.path` when running tests without an editable install.
+- **test_battery.py:** `update_soc` charge/discharge direction and SOC bounds (soc_min/soc_max).
+- **test_forecast_resolution.py:** Synthetic irradiance with `step_minutes=15` yields `48*4` points and monotonic timestamps.
+- **test_simulation_smoke.py:** 3-day simulation with `ForecastAwareHeuristicController`, synthetic forecast; asserts state CSV exists, non-empty, and `pv_now_kw.max() > 0.1`.
 
----
+### 3.4 Simulator and Forecast
 
-## 4. Issues and Gaps Identified
+- **Synthetic forecast:** `synthetic_irradiance_forecast(start, hours, step_minutes=60, ...)` now produces one point per step (e.g. 96 points per day for 15-min steps). Docstring explains simulator resolution.
+- **Resampling:** `_resample_to_steps(series, target_len)` handles length mismatch (repeat or linear interpolation), so OpenWeather hourly data is safely aligned to 15-min steps.
+- **Fallback:** On forecast failure, simulator logs a warning and uses synthetic with correct step resolution.
 
-### 4.1 Bug: PV Forecast Resolution Mismatch (High Impact)
+### 3.5 App and PDF
 
-- **Location:** `src/offgrid_dt/dt/simulator.py` + `synthetic_irradiance_forecast` in `forecast/openweather.py`.
-- **Issue:** Synthetic forecast returns **one point per hour** (`hours=24*days` → 168 points for 7 days). The simulator uses **15-minute steps** (96 steps/day → 672 steps for 7 days). PV is indexed as `pv_forecast_kw_full[step]`, so:
-  - Steps 0–167 use indices 0–167 (first ~1.75 days).
-  - Steps 168–671 go out of range and get 0.0 → **no PV for most of a 7-day run** when using synthetic forecast.
-- **Impact:** Long runs without OpenWeather key show zero PV after the first ~1.75 days; KPIs and behaviour are wrong.
-- **Recommendation:** Either (a) generate synthetic irradiance at 15-min resolution (e.g. 4 points per hour), or (b) in the simulator, map step to hour: `hour_idx = step * dt_minutes // 60` and use `pv_forecast_kw_full[min(hour_idx, len(pv_forecast_kw_full)-1)]`, and similarly expand the rolling `pv_forecast` slice to match horizon in steps.
-
-### 4.2 OpenAI Model Name
-
-- **Location:** `streamlit_app/app.py`, `simulator.py`, `.streamlit/secrets.template.toml`.
-- **Issue:** Default model is `gpt-4.1-mini`. If the intent is OpenAI’s small model, the correct name is typically `gpt-4o-mini` or `gpt-4-mini`. `gpt-4.1-mini` may be invalid or institution-specific.
-- **Recommendation:** Confirm the correct model id; if using OpenAI API, switch default to a valid name (e.g. `gpt-4o-mini`) and document it.
-
-### 4.3 No Automated Tests
-
-- **Location:** Project root; no `tests/` or `*_test.py` / `test_*.py` found.
-- **Issue:** README suggests integrity checks (`compileall`, short `run_simulation.py`), but there are no unit or integration tests. Refactors and fixes (e.g. PV resolution) are not regression-safe.
-- **Recommendation:** Add a `tests/` package with:
-  - Unit tests for battery `update_soc`, load `requested_kw_for_step` / `build_daily_tasks`, KPI snapshot, deterministic `generate_guidance`.
-  - Integration test: short simulation (1–2 days) with synthetic data and one controller; assert non-empty state CSV and basic KPI sanity (e.g. CLSR in [0, 1] where applicable).
-  - Optional: parametrized test for PV step indexing once the resolution bug is fixed.
-
-### 4.4 Config Package Unused
-
-- **Location:** `src/offgrid_dt/config/` contains only an empty `__init__.py`.
-- **Issue:** No shared config loading (e.g. defaults, validation). Defaults are duplicated (e.g. in schema, app, CLI).
-- **Recommendation:** Either remove `config/` if not needed or use it for a single source of defaults (e.g. timestep, horizon, SOC bounds) and import from schema/app/CLI.
-
-### 4.5 Error Handling and Logging
-
-- **Location:** `simulator.py` (forecast try/except), `openweather.py` (multiple endpoints), `explain.py` (OpenAI).
-- **Issue:** Exceptions are caught broadly; failures fall back silently (e.g. synthetic forecast, original guidance). No structured logging, so debugging and deployment monitoring are harder.
-- **Recommendation:** Use a small logging facade (e.g. `logging`); log at WARNING when falling back to synthetic or when OpenAI enhancement fails; avoid swallowing errors without at least one log line.
-
-### 4.6 Streamlit App Assumes Prior Run
-
-- **Location:** `streamlit_app/app.py` (e.g. after “Run digital twin” block).
-- **Issue:** If `last_run` is not set, the app shows an info message and stops. Until the user runs the twin, all main content (replay, heatmap, PDF) is hidden. No sample/demo data for first-time visitors.
-- **Recommendation:** Optional “Load sample run” or a short auto-run with default config (e.g. 1 day) so the UI can be explored without configuring and clicking Run first; or clearly document “Run once to see results.”
-
-### 4.7 Dependencies and Packaging
-
-- **Location:** `requirements.txt` vs `pyproject.toml`.
-- **Issue:** `requirements.txt` includes `streamlit` and `openai`; `pyproject.toml` lists them as optional (`ui`, `llm`). Installing with `pip install -e .` does not install Streamlit/OpenAI; README quick start uses `pip install -r requirements.txt`. Risk of divergence (e.g. someone installs only the package and the app fails).
-- **Recommendation:** Align installation: e.g. in README, “For full app: `pip install -r requirements.txt`” vs “For engine only: `pip install -e .`”. Optionally add a `dev` or `all` extra that pulls `requirements.txt`-equivalent.
-
-### 4.8 Minor / Consistency
-
-- **NaiveController:** In `controllers.py`, `shed` is used uninitialized if the `else` branch is taken (logically it is always set, but a static linter may complain). Initializing `shed = []` before the if/else would make it explicit.
-- **Typing:** `simulator.py` uses `Dict[str, any]` for `pending_tasks`; `any` should be `Any` (from `typing`) for consistency and correctness.
-- **PDF report:** `schedule_from_state_csv` and heatmap both parse `served_task_ids` with the same `;`-separated, `task_id` prefix convention; this is consistent but could be a shared helper to avoid drift.
+- **App:** Refactored session state (e.g. `loc_query`, `latitude`, `longitude`, `sim_days`), appliance catalog as `list[Appliance]`, “Run demo (2 days)” button, and import of `build_two_day_plan_pdf_from_logs`.
+- **PDF:** New helper `build_two_day_plan_pdf_from_logs(state_csv_path, guidance_jsonl_path, title, weather_summary)` builds the two-day plan from log files and supports optional weather summary. Original `build_plan_pdf`, `build_two_day_plan_pdf`, and `schedule_from_state_csv` remain in `pdf_report.py`.
 
 ---
 
-## 5. Recommendations for Improvement and Enhancement
+## 4. Issues and Gaps Identified (Current)
+
+### 4.1 Orphaned / Dead Code in openweather.py (Medium)
+
+- **Location:** `src/offgrid_dt/forecast/openweather.py`, lines 132–166.
+- **Issue:** After `synthetic_irradiance_forecast` (which ends with `return points` at line 129), there is an indented `def current_weather(self, lat, lon, units="metric")`. It is **inside** the function (after the return), so it is **unreachable**. It looks like a method intended for `OpenWeatherSolarClient` that was pasted in the wrong place.
+- **Impact:** Dead code; `current_weather` is never callable. If the app or PDF uses “current weather” (e.g. for weather_summary), it would need to be implemented elsewhere or this method moved into the class.
+- **Recommendation:** Move `current_weather` into `OpenWeatherSolarClient` (correct indentation and `self`), or remove it if not needed. If the UI passes `weather_summary` from somewhere else, document the source and remove the orphan.
+
+### 4.2 PDF-from-logs Schema Mismatch (High)
+
+- **Location:** `src/offgrid_dt/io/pdf_report.py` — `build_two_day_plan_pdf_from_logs`.
+- **Issue:** The function expects state CSV columns and guidance JSONL shape that do not match what the logger actually writes.
+
+  **State CSV:** Logger writes (see `io/logger.py` and sample `logs_smoke2/.../forecast_heuristic_2d_state.csv`):
+  - No `location_name`, `pv_capacity_kw`, `battery_capacity_kwh`, `inverter_max_kw`, `timestep_minutes`, or `pv_kw`.
+  - KPIs as `kpi_CLSR`, `kpi_Blackout_minutes`, `kpi_SAR`, `kpi_Solar_utilization`, `kpi_Battery_throughput_kwh`.
+
+  **PDF builder expects:**
+  - `first.get("location_name")`, `pv_capacity_kw`, `battery_capacity_kwh`, `inverter_max_kw` → all absent, so system summary shows 0 or blank.
+  - `last.get("clsr_running")`, `blackout_minutes_running`, `sar_running`, `solar_util_running`, `throughput_kwh_running` → none exist; actual columns are `kpi_CLSR`, etc. So KPI block shows 0.
+  - `timestep_minutes` from CSV → absent; fallback 15 is used in one place but `pv_kw` is used for tomorrow outlook; CSV has `pv_now_kw`, not `pv_kw`.
+
+- **Impact:** Downloaded PDF from “Downloads and raw logs” shows empty/zero system summary and zero KPIs; tomorrow outlook may also be wrong if it relies on `pv_kw`.
+- **Recommendation:** Either (a) extend the logger to write system config and timestep (and optionally a row-level `pv_kw` alias or use `pv_now_kw` in PDF), and add columns `clsr_running`, `blackout_minutes_running`, etc., **or** (b) change `build_two_day_plan_pdf_from_logs` to read the current CSV/JSONL schema: use `kpi_CLSR`, `kpi_Blackout_minutes`, `kpi_SAR`, `kpi_Solar_utilization`, `kpi_Battery_throughput_kwh`, and `pv_now_kw`, and accept system summary from config passed in or leave as “From run” if not in CSV. Align guidance JSONL usage: logger writes only `r.guidance.model_dump()` (no timestamp); if PDF needs per-day guidance, either add timestamp to guidance JSONL or derive day from state CSV row index.
+
+### 4.3 Guidance JSONL Without Timestamp (Medium)
+
+- **Location:** `src/offgrid_dt/io/logger.py` (writes guidance); `pdf_report.build_two_day_plan_pdf_from_logs` (reads guidance).
+- **Issue:** Logger writes `json.dumps(r.guidance.model_dump(), ...)` per line. `Guidance` has no `timestamp` field, so guidance JSONL lines do not contain timestamp. PDF code does `gdf["timestamp"] = pd.to_datetime(gdf["timestamp"], utc=True)` and then `gdf["day"] = gdf["timestamp"].dt.floor("D")`, so `timestamp` and `day` will be missing/NaT and day-based splits for “today” vs “tomorrow” recommendations are broken.
+- **Recommendation:** Either (a) add `timestamp` to each guidance JSONL line in the logger (e.g. include `r.timestamp.isoformat()` in the dict written per line), and ensure PDF uses it, or (b) in PDF, align guidance to state CSV by row index (e.g. same number of lines as state rows) and derive day from state CSV timestamps.
+
+### 5.2 pytest in pyproject.toml (Low)
+
+- **Location:** `pyproject.toml` vs `requirements.txt`.
+- **Issue:** `requirements.txt` includes `pytest>=8.0`, and README says to run `pytest -q`. `pyproject.toml` does not list pytest in `dependencies` or `[project.optional-dependencies]` (e.g. `dev`). Editable installs with `pip install -e .` will not get pytest.
+- **Recommendation:** Add a `dev` optional extra, e.g. `dev = ["pytest>=8.0"]`, and in README mention “For tests: `pip install -e '.[dev]'` or use `requirements.txt`.” Alternatively add pytest to main dependencies in pyproject if the project expects tests to always be runnable.
+
+### 5.3 Config Package Still Unused (Low)
+
+- **Location:** `src/offgrid_dt/config/` — only empty `__init__.py`.
+- **Recommendation:** Remove the package or use it for shared defaults/validation to avoid duplication between schema, app, and CLI.
+
+### 5.4 Run Simulation Script vs Logger Schema (Low)
+
+- **Location:** `scripts/run_simulation.py` passes `out_dir=out_dir / f"run_{c.name}"`; `simulate()` returns paths. Logger does not write system config or timestep into the state CSV. So any consumer (e.g. PDF-from-logs) that expects those columns must be updated or the logger extended.
+- **Recommendation:** Align with the PDF-from-logs fix (either extend logger or adapt PDF to current schema).
+
+---
+
+## 5. Recommendations Summary
 
 ### 5.1 High Priority
 
-1. **Fix PV forecast resolution** (see 4.1): Resolve hourly-vs-step indexing so multi-day runs with synthetic (and, if applicable, OpenWeather) forecast have correct PV for every step.
-2. **Add tests** (see 4.3): At least battery, load, KPI, and one short end-to-end simulation; add to CI if the project is on GitHub.
-3. **Verify OpenAI model name** (see 4.2): Use a valid model id and document it.
+1. **Fix PDF-from-logs schema (4.2, 4.3):** Make `build_two_day_plan_pdf_from_logs` use the actual state CSV column names (`kpi_*`, `pv_now_kw`) and either add `timestamp` to guidance JSONL or derive day from state CSV when splitting today/tomorrow recommendations.
+2. **Resolve openweather orphan (4.1):** Move `current_weather` into `OpenWeatherSolarClient` or remove it, and ensure any `weather_summary` in the app is populated from a callable API.
 
-### 5.2 Medium Priority
+### 5.2 Medium / Low Priority
 
-4. **Structured logging** (see 4.5): Single module or function that uses `logging`; use it in simulator, forecast, and XAI for fallbacks and errors.
-5. **First-run UX** (see 4.6): Sample run or one-click “Demo run” so the dashboard is usable without a prior manual run.
-6. **Install/docs alignment** (see 4.7): Clarify in README when to use `requirements.txt` vs `pip install -e .` and, if desired, add an extra that includes UI/LLM.
-
-### 5.3 Lower Priority / Enhancements
-
-7. **Config package** (see 4.4): Either remove or use for shared defaults and validation.
-8. **Minor code cleanups** (see 4.8): Initialize `shed` in NaiveController; replace `any` with `Any`; consider a shared parser for `served_task_ids`.
-9. **OpenWeather:** Document which OpenWeather product/endpoint is required for solar forecast and any rate limits; optional retry/backoff (e.g. tenacity) is already in deps.
-10. **Accessibility and i18n:** If targeting field pilots or diverse users, consider basic accessibility (labels, contrast) and later a simple i18n path for strings (e.g. reason codes, headlines).
-11. **HIL/live path:** README already describes moving from replay to live telemetry and actuators; keep the data contract stable and consider a small “live adapter” interface (e.g. abstract data source) for future swap.
+3. **pytest in pyproject (4.4):** Add `dev = ["pytest>=8.0"]` (or similar) and document how to install dev deps.
+4. **Config package (4.5):** Remove or use for shared defaults.
+5. **Documentation:** In README or a short “Log format” section, document the state CSV and guidance JSONL schema (column names, one line per step for JSONL, optional timestamp) so PDF and future tools stay aligned.
 
 ---
 
-## 6. Integrity Checks (Current vs Suggested)
+## 7. Integrity Checks (Current vs Suggested)
 
-- **Current (README):**  
-  `python -m compileall -q src`  
-  `python scripts/run_simulation.py --days 2 --out logs_smoke`
-
-- **Suggested addition:**  
-  After adding tests:  
-  `pytest tests/ -v`  
-  (or `python -m pytest tests/ -v`).
-
----
-
-## 7. Summary Table
-
-| Area              | Status        | Notes                                                                 |
-|-------------------|---------------|-----------------------------------------------------------------------|
-| Architecture      | Good          | Clear engine/UI split; modular packages; Pydantic contracts           |
-| Simulation core   | Good          | Logic correct; PV resolution bug with synthetic forecast             |
-| Controllers       | Good          | Four controllers; forecast heuristic aligned with survivability      |
-| Forecasting       | Adequate      | OpenWeather + synthetic; resolution mismatch with 15-min steps        |
-| Explainability    | Good          | Deterministic + optional LLM; decisions unchanged by LLM              |
-| UI                | Good          | Feature-complete; first-run experience could be improved              |
-| Logging / PDF     | Good          | State CSV, guidance JSONL, PDF handouts as described                   |
-| Tests             | Missing       | No automated tests                                                    |
-| Documentation     | Good          | README matches implementation and limitations                         |
-| Security          | Good          | Secrets via Streamlit; no keys in logs                                |
-| Deployment        | Documented    | Streamlit Cloud steps in README                                       |
+- **Current (README):**
+  ```bash
+  python -m compileall -q src
+  python scripts/run_simulation.py --days 2 --out logs_smoke
+  pytest -q
+  ```
+- **Suggested:** Ensure pytest is installed (e.g. `pip install -r requirements.txt` or `pip install -e '.[dev]'`). After fixing PDF-from-logs, consider a small test that builds a two-day PDF from a fixture CSV/JSONL and checks for non-zero KPI strings.
 
 ---
 
-This audit reflects the codebase and README as of the audit date. Addressing the high-priority items (PV resolution, tests, model name) will significantly improve correctness and maintainability; the rest can be scheduled according to roadmap and resources.
+## 7. Summary Table (Revised)
+
+| Area | Status | Notes |
+|------|--------|--------|
+| Architecture | Good | Engine/UI split; modular packages; Pydantic contracts |
+| Simulation core | Good | PV resolution fixed; resampling; logging on fallback |
+| Controllers | Good | Four controllers; forecast heuristic as intended |
+| Forecasting | Good | Synthetic 15-min; OpenWeather hourly resampled in simulator |
+| Explainability | Good | Deterministic + optional LLM; model default gpt-4o-mini |
+| Tests | Good | Battery, forecast resolution, simulation smoke; pytest in requirements.txt |
+| UI | Good | Demo button; refactored app; PDF-from-logs API present |
+| PDF from logs | Good | kpi_*, pv_now_kw, system_summary_override, advisory disclaimer, reasons |
+| openweather.py | Good | current_weather on OpenWeatherSolarClient; orphan removed |
+| Documentation | Good | README updated; pytest in integrity checks |
+| Packaging | Minor | pytest not in pyproject.toml optional deps |
+
+---
+
+This audit reflects the repository state after the production-readiness pass aligned with the handover document. The interface supports the manuscript claims and evidence artifacts (PDF, CSV, JSONL) with correct schema and advisory framing.“download PDF from logs” 

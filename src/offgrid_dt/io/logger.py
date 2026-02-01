@@ -54,7 +54,8 @@ class RunLogger:
                         **{f"kpi_{k}": v for k, v in r.kpis_running.items()},
                     }
                 )
-                f.write(json.dumps(r.guidance.model_dump(), ensure_ascii=False) + "\n")
+                line = {"timestamp": r.timestamp.isoformat(), **r.guidance.model_dump()}
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
         pd.DataFrame(rows).to_csv(state_path, index=False)
         return {"state_csv": str(state_path), "guidance_jsonl": str(guidance_path)}

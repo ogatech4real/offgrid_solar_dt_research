@@ -212,8 +212,10 @@ with st.sidebar:
     auto_enabled = st.toggle("Auto-run every 15 minutes", value=auto_enabled)
     st.session_state["auto_enabled"] = auto_enabled
 
-    controller_names = list(get_controllers().keys())
-    controller_name = st.selectbox("Control strategy", controller_names, index=controller_names.index(st.session_state.get("controller_name", "forecast_heuristic")) if "forecast_heuristic" in controller_names else 0)
+    _controllers_list = get_controllers()
+    _name_to_controller = {c.name: c for c in _controllers_list}
+    controller_names = list(_name_to_controller.keys())
+    controller_name = st.selectbox("Control strategy", controller_names, index=controller_names.index(st.session_state.get("controller_name", "forecast_heuristic")) if st.session_state.get("controller_name", "forecast_heuristic") in controller_names else 0)
     st.session_state["controller_name"] = controller_name
 
     days = st.selectbox("Simulation days (for replay + tomorrow plan)", [2, 3, 7], index=0)
@@ -270,11 +272,12 @@ if run_btn:
     openai_key = st.secrets.get("openai_api_key", "")
     openai_model = st.secrets.get("openai_model", "gpt-4o-mini")
 
-    controller = get_controllers()[st.session_state.get("controller_name")]
+    _name_to_controller = {c.name: c for c in get_controllers()}
+    controller = _name_to_controller[st.session_state.get("controller_name", "forecast_heuristic")]
 
     with st.spinner("Running digital twin…"):
         result = simulate(
-            config=cfg,
+            cfg=cfg,
             appliances=appliances,
             controller=controller,
             days=int(st.session_state.get("sim_days", 2)),
@@ -294,10 +297,9 @@ if not res:
 
 state_csv = res["state_csv"]
 guidance_jsonl = res["guidance_jsonl"]
-t0 = pd.to_datetime(res["start_time"])
-
 df = pd.read_csv(state_csv)
 df["ts"] = pd.to_datetime(df["timestamp"])
+t0 = pd.to_datetime(res.get("start_time", df["timestamp"].iloc[0] if len(df) else None))
 
 # Replay control
 st.markdown("### Live Replay")
@@ -317,23 +319,23 @@ if client:
     except Exception:
         weather = None
 
-# KPI summary cards (more meaningful language)
+# KPI summary cards (state CSV columns: kpi_CLSR, kpi_Blackout_minutes, kpi_SAR, kpi_Battery_throughput_kwh)
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown('<div class="card"><div class="muted">Critical power reliability</div>'
-                f'<div class="kpi">{100*float(row.get("clsr_running",0)):.1f}%</div>'
+                f'<div class="kpi">{100*float(row.get("kpi_CLSR", 0)):.1f}%</div>'
                 '<div class="muted">How consistently essentials stay powered</div></div>', unsafe_allow_html=True)
 with col2:
     st.markdown('<div class="card"><div class="muted">Blackout time (critical)</div>'
-                f'<div class="kpi">{float(row.get("blackout_minutes_running",0)):.0f} min</div>'
+                f'<div class="kpi">{float(row.get("kpi_Blackout_minutes", 0)):.0f} min</div>'
                 '<div class="muted">Unserved essentials so far</div></div>', unsafe_allow_html=True)
 with col3:
     st.markdown('<div class="card"><div class="muted">Solar autonomy</div>'
-                f'<div class="kpi">{100*float(row.get("sar_running",0)):.1f}%</div>'
+                f'<div class="kpi">{100*float(row.get("kpi_SAR", 0)):.1f}%</div>'
                 '<div class="muted">Share of demand met by solar</div></div>', unsafe_allow_html=True)
 with col4:
     st.markdown('<div class="card"><div class="muted">Battery wear proxy</div>'
-                f'<div class="kpi">{float(row.get("throughput_kwh_running",0)):.2f} kWh</div>'
+                f'<div class="kpi">{float(row.get("kpi_Battery_throughput_kwh", 0)):.2f} kWh</div>'
                 '<div class="muted">Total charge/discharge throughput</div></div>', unsafe_allow_html=True)
 
 # Weather card
@@ -351,16 +353,19 @@ if weather:
 else:
     st.caption("Weather card requires OpenWeather key. The twin still runs with synthetic PV if needed.")
 
-# Guidance display
+# Guidance display (align by step index; guidance JSONL has same row count as state CSV)
 st.markdown("### Recommendation")
 gdf = pd.read_json(guidance_jsonl, lines=True)
-gdf["ts"] = pd.to_datetime(gdf["timestamp"])
-grow = gdf.iloc[min(step, len(gdf)-1)]
+if "timestamp" in gdf.columns:
+    gdf["ts"] = pd.to_datetime(gdf["timestamp"], utc=True)
+grow = gdf.iloc[min(step, len(gdf) - 1)]
 
-risk = str(grow.get("risk_level",""))
-headline = str(grow.get("headline",""))
-explanation = str(grow.get("explanation",""))
+risk = str(grow.get("risk_level", ""))
+headline = str(grow.get("headline", ""))
+explanation = str(grow.get("explanation", ""))
 reason_codes = grow.get("reason_codes", [])
+if isinstance(reason_codes, str):
+    reason_codes = [x.strip() for x in reason_codes.split(",")] if reason_codes else []
 dominant = grow.get("dominant_factors", {})
 
 gcol1, gcol2 = st.columns([3, 2])
@@ -371,18 +376,22 @@ with gcol1:
     if reason_codes:
         st.caption("Reason codes: " + ", ".join(reason_codes))
 with gcol2:
+    soc_pct = 100 * float(row.get("soc_now", 0))
+    risk_lower = str(risk).lower()
+    battery_state_label = "Safe" if risk_lower == "low" else ("Caution" if risk_lower == "medium" else "Risk")
     st.markdown('<div class="card"><div class="muted">Battery state</div>'
-                f'<div class="kpi">{100*float(row.get("soc",0)):.0f}% SOC</div>'
-                f'<div class="muted">Reserve protected automatically</div></div>', unsafe_allow_html=True)
+                f'<div class="kpi">{soc_pct:.0f}% SOC · {battery_state_label}</div>'
+                '<div class="muted">Reserve protected automatically (advisory only)</div></div>', unsafe_allow_html=True)
 
-# Forecast plot: PV power + cumulative energy for next 24/48h from replay point
+# Forecast plot: PV power + cumulative energy for next 24/48h from replay point (§5.3: labeled as forecast, not certainty)
 st.markdown("### Solar Forecast: Power and Energy")
+st.caption("Forecast, not certainty — based on simulated PV for the digital twin. Use for planning only.")
 horizon_hours = st.radio("Forecast window", [24, 48], horizontal=True)
 steps = int(horizon_hours * 60 / DT_MINUTES_DEFAULT)
 i0 = step
 i1 = min(i0 + steps, len(df))
 
-pv_kw = df["pv_kw"].iloc[i0:i1].to_numpy(dtype=float)
+pv_kw = df["pv_now_kw"].iloc[i0:i1].to_numpy(dtype=float)
 ts = pd.date_range(now_ts, periods=len(pv_kw), freq=f"{DT_MINUTES_DEFAULT}min")
 
 fig = plot_power_and_energy(ts, pv_kw, DT_MINUTES_DEFAULT)
@@ -390,23 +399,25 @@ st.plotly_chart(fig, use_container_width=True)
 
 # Load vs served (less technical phrasing)
 st.markdown("### Household Power Use")
-sub = df.iloc[max(0, step-96):min(len(df), step+96)].copy()
+sub = df.iloc[max(0, step - 96) : min(len(df), step + 96)].copy()
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["load_requested_kw"], mode="lines", name="Requested load (kW)"))
 fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["load_served_kw"], mode="lines", name="Served load (kW)"))
-fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_kw"], mode="lines", name="Solar power (kW)"))
+fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_now_kw"], mode="lines", name="Solar power (kW)"))
 fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
 st.plotly_chart(fig2, use_container_width=True)
 
-# Appliance advisory panel (green/red)
+# Appliance advisory panel (§5.4: Status Allowed / Delay / Avoid; green = safe, red = avoid; no physical switching)
 st.markdown("### Appliance Advisory (Now)")
+st.caption("Advisory only — no automatic control. Green = safe to run, red = avoid now.")
 selected_appliances = st.session_state.get("selected_appliances", [])
 qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
 
-soc = float(row.get("soc", 0.0))
+soc = float(row.get("soc_now", 0.0))
 reserve = float(SystemConfig().soc_min)
-pv_now = float(row.get("pv_kw", 0.0))
+pv_now = float(row.get("pv_now_kw", 0.0))
+risk_lower = str(risk).lower()
 
 records = []
 for name in selected_appliances:
@@ -414,51 +425,56 @@ for name in selected_appliances:
     q = int(qty_map.get(a.id, 1))
     watts = float(a.power_w) * q
     kw = watts / 1000.0
-    # simple advisories: protect reserve + avoid high loads when risk high or SOC low
-    status = "OK"
+    # §5.4: Status Allowed / Delay / Avoid
+    status = "Allowed"
     note = "Safe to use"
-    if a.category != "critical" and (soc <= reserve + 0.05 or str(risk).lower() == "high"):
-        status = "Avoid now"
+    if a.category != "critical" and (soc <= reserve + 0.05 or risk_lower == "high"):
+        status = "Avoid"
         note = "Preserve battery reserve for essentials"
-    if a.category != "critical" and pv_now > 0.5 and soc > reserve + 0.1 and str(risk).lower() == "low":
-        status = "Best in solar window"
-        note = "Prefer running during strong solar"
+    elif a.category != "critical" and risk_lower == "medium" and soc <= reserve + 0.12:
+        status = "Delay"
+        note = "Prefer waiting until solar improves or SOC rises"
+    elif a.category != "critical" and pv_now > 0.5 and soc > reserve + 0.1 and risk_lower == "low":
+        status = "Allowed"
+        note = "Good time — strong solar; prefer this window"
     records.append({
         "Appliance": f"{a.name} (x{q})",
         "Category": category_badge(a.category),
         "Power": f"{kw:.2f} kW",
-        "Advisory": status,
+        "Status": status,
         "Why": note,
     })
 
 adv = pd.DataFrame(records)
 def _style_advisory(v: str):
-    if "Avoid" in v:
+    if v == "Avoid":
         return "background-color: rgba(239,68,68,0.12)"
-    if "Best" in v:
+    if v == "Allowed":
         return "background-color: rgba(34,197,94,0.12)"
-    return "background-color: rgba(59,130,246,0.06)"
-st.dataframe(adv.style.applymap(_style_advisory, subset=["Advisory"]), use_container_width=True, hide_index=True)
+    if v == "Delay":
+        return "background-color: rgba(234,179,8,0.12)"
+    return ""
+st.dataframe(adv.style.applymap(_style_advisory, subset=["Status"]), use_container_width=True, hide_index=True)
 
-# Schedule heatmap (existing file uses served_task_ids; keep using helper)
+# Schedule heatmap (log-driven; §2.2 Digital twin replay)
 st.markdown("### Recommended Schedule (Heatmap)")
-# Build schedule matrix directly from served_task_ids (per-step) for the selected day
 day_df2 = df.copy()
 day_df2["day"] = day_df2["ts"].dt.floor("D")
 days_unique = sorted(day_df2["day"].unique())
 if not days_unique:
     st.caption("No schedule available.")
 else:
-    # Match selected day to the appropriate index
-    sel_day = pd.to_datetime(str(day_choice))
-    # find closest
-    day_match = None
-    for d in days_unique:
-        if d.date() == day_choice:
-            day_match = d
-            break
-    if day_match is None:
-        day_match = days_unique[0]
+    # Day to show: default to the day containing the current replay step
+    now_day = now_ts.floor("D") if hasattr(now_ts, "floor") else pd.Timestamp(now_ts).floor("D")
+    day_index = next((i for i, d in enumerate(days_unique) if d == now_day), 0)
+    day_options = list(range(len(days_unique)))
+    day_choice_idx = st.selectbox(
+        "Day to show",
+        options=day_options,
+        index=day_index,
+        format_func=lambda i: str(days_unique[i].date()) if i < len(days_unique) else "",
+    )
+    day_match = days_unique[day_choice_idx]
     one = day_df2[day_df2["day"] == day_match].reset_index(drop=True)
 
     # infer appliance id -> name from catalog
@@ -487,15 +503,28 @@ else:
     fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10))
     st.plotly_chart(fig_hm, use_container_width=True)
 
-# Downloads (make it meaningful)
+# Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
 st.markdown("### Downloads")
-dcols = st.columns([2,2,2])
-dcols[0].download_button("Download state log (CSV)", data=open(state_csv, "rb"), file_name="state_log.csv")
-dcols[1].download_button("Download guidance log (JSONL)", data=open(guidance_jsonl, "rb"), file_name="guidance_log.jsonl")
+st.caption("Evidence artifacts for reproducibility. PDF includes system summary, weather context, today + tomorrow plan, KPIs, and advisory disclaimer.")
+dcols = st.columns([2, 2, 2])
+with dcols[0]:
+    st.download_button("Download state log (CSV)", data=Path(state_csv).read_bytes(), file_name="state_log.csv", mime="text/csv", use_container_width=True)
+with dcols[1]:
+    st.download_button("Download guidance log (JSONL)", data=Path(guidance_jsonl).read_bytes(), file_name="guidance_log.jsonl", mime="application/jsonl", use_container_width=True)
 
-include_tomorrow = True
-if include_tomorrow:
-    # Build a more meaningful PDF
-    weather_summary = weather if weather else {}
-    pdf_bytes = build_two_day_plan_pdf_from_logs(state_csv_path=state_csv, guidance_jsonl_path=guidance_jsonl, title="Solar-first Household Plan (Today + Tomorrow)", weather_summary=weather_summary)
-    dcols[2].download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf")
+system_summary_for_pdf = {
+    "Location": str(st.session_state.get("location_name", "")) or "Configured location",
+    "PV capacity": f"{float(st.session_state.get('pv_kw', 0)):.1f} kW",
+    "Battery": f"{float(st.session_state.get('bat_kwh', 0)):.1f} kWh",
+    "Inverter limit": f"{float(st.session_state.get('inv_kw', 0)):.1f} kW",
+}
+weather_summary = weather if weather else {}
+pdf_bytes = build_two_day_plan_pdf_from_logs(
+    state_csv_path=state_csv,
+    guidance_jsonl_path=guidance_jsonl,
+    title="Solar-first Household Plan (Today + Tomorrow)",
+    weather_summary=weather_summary,
+    system_summary_override=system_summary_for_pdf,
+)
+with dcols[2]:
+    st.download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf", use_container_width=True)

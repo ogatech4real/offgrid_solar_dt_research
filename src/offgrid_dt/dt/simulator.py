@@ -227,4 +227,7 @@ def simulate(
         logger.append(rec)
 
     prefix = f"{controller.name}_{days}d"
-    return logger.flush(prefix=prefix)
+    out = logger.flush(prefix=prefix)
+    if out:
+        out["start_time"] = start.isoformat()
+    return out
