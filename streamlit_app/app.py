@@ -237,7 +237,7 @@ if st.session_state.get("auto_enabled", False) and not run_btn:
     last_run_time = st.session_state.get("last_run_time")
     if isinstance(last_run_time, datetime):
         last_utc = last_run_time.replace(tzinfo=timezone.utc) if last_run_time.tzinfo is None else last_run_time
-if datetime.now(timezone.utc) - last_utc > timedelta(minutes=14):
+        if datetime.now(timezone.utc) - last_utc > timedelta(minutes=14):
             run_btn = True
     else:
         # no prior run yet, do one
