@@ -1,0 +1,10 @@
+streamlit>=1.31
+numpy>=1.24
+pandas>=2.0
+pydantic>=2.6
+pydantic-settings>=2.2
+requests>=2.31
+python-dateutil>=2.9
+plotly>=5.18
+tenacity>=8.2
+openai>=1.10.0
