@@ -19,7 +19,7 @@ class SystemConfig(BaseModel):
     battery_capacity_kwh: float = Field(gt=0)
     inverter_max_kw: float = Field(gt=0)
 
-    soc_init: float = Field(default=0.6, ge=0.0, le=1.0)
+    soc_init: float = Field(default=0.7, ge=0.0, le=1.0)
     soc_min: float = Field(default=0.25, ge=0.0, le=1.0)
     soc_max: float = Field(default=0.95, ge=0.0, le=1.0)
 

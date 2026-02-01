@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+import logging
 
 import numpy as np
 
@@ -26,7 +28,7 @@ def simulate(
     openweather_api_key: Optional[str] = None,
     openweather_base_url: str = "https://api.openweathermap.org",
     openai_api_key: Optional[str] = None,
-    openai_model: str = "gpt-4.1-mini",
+    openai_model: str = "gpt-4o-mini",
     out_dir: Optional[Path] = None,
 ) -> Dict[str, str]:
     """Run closed-loop simulation and write logs.
@@ -39,6 +41,28 @@ def simulate(
     steps_per_day = int(round(24 / timestep_hours))
     total_steps = steps_per_day * days
 
+    log = logging.getLogger("offgrid_dt")
+
+    def _resample_to_steps(series: List[float], target_len: int) -> List[float]:
+        """Resample a forecast series to match simulator step resolution.
+
+        Handles common cases:
+        - hourly series -> 15-min steps (repeat)
+        - shorter/longer arbitrary series (linear interpolation)
+        """
+        if not series:
+            return [0.0] * target_len
+        if len(series) == target_len:
+            return series
+        if target_len % len(series) == 0:
+            factor = target_len // len(series)
+            return [v for v in series for _ in range(factor)]
+        # generic linear interpolation
+        x_old = np.linspace(0.0, 1.0, num=len(series))
+        x_new = np.linspace(0.0, 1.0, num=target_len)
+        y_new = np.interp(x_new, x_old, np.asarray(series, dtype=float))
+        return [float(v) for v in y_new]
+
     # PV forecast source
     start = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
     pv_forecast_kw_full: List[float] = []
@@ -47,11 +71,15 @@ def simulate(
             client = OpenWeatherSolarClient(openweather_api_key, base_url=openweather_base_url)
             irr = client.fetch_irradiance_forecast(cfg.latitude, cfg.longitude, hours=24 * days)
         else:
-            irr = synthetic_irradiance_forecast(start=start, hours=24 * days)
+            irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
         pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
     except Exception:
-        irr = synthetic_irradiance_forecast(start=start, hours=24 * days)
+        log.warning("PV forecast fetch failed; falling back to synthetic irradiance.")
+        irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
         pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
+
+    # Ensure forecast aligns to simulator resolution
+    pv_forecast_kw_full = _resample_to_steps(pv_forecast_kw_full, total_steps)
 
     # Logger
     out_dir = out_dir or Path("logs") / f"run_{controller.name}"
@@ -62,7 +90,7 @@ def simulate(
 
     # Build tasks day-by-day
     pending: Dict[str, Appliance] = {}
-    pending_tasks: Dict[str, any] = {}
+    pending_tasks: Dict[str, Any] = {}
     remaining_steps: Dict[str, int] = {}
 
     # Track which tasks are currently running (for multi-step duration)

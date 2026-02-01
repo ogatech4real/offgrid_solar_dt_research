@@ -93,6 +93,7 @@ cp .streamlit/secrets.template.toml .streamlit/secrets.toml
 In `secrets.toml`:
 - `openweather_api_key` enables geocoding + forecast calls.
 - `openai_api_key` enables LLM-enhanced explanation rewriting (deterministic XAI remains the source of truth).
+ - `openai_model` (optional) defaults to `gpt-4o-mini`.
 
 ### 3) Run the app
 ```bash
@@ -193,6 +194,7 @@ Because the UI and engine are separated and communicate via a stable data contra
 ```bash
 python -m compileall -q src
 python scripts/run_simulation.py --days 2 --out logs_smoke
+pytest -q
 ```
 
 ---
