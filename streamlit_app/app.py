@@ -1,7 +1,7 @@
 
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 
 # Ensure src/ is importable when running Streamlit without installing the package
@@ -236,7 +236,8 @@ if st.session_state.get("auto_enabled", False) and not run_btn:
     # Run if last run older than ~14 minutes
     last_run_time = st.session_state.get("last_run_time")
     if isinstance(last_run_time, datetime):
-        if datetime.utcnow() - last_run_time > timedelta(minutes=14):
+        last_utc = last_run_time.replace(tzinfo=timezone.utc) if last_run_time.tzinfo is None else last_run_time
+if datetime.now(timezone.utc) - last_utc > timedelta(minutes=14):
             run_btn = True
     else:
         # no prior run yet, do one
@@ -287,7 +288,7 @@ if run_btn:
         )
 
     st.session_state["last_run"] = result
-    st.session_state["last_run_time"] = datetime.utcnow()
+    st.session_state["last_run_time"] = datetime.now(timezone.utc)
 
 # ---------------------------- Load result ----------------------------
 res = st.session_state.get("last_run")
@@ -395,7 +396,7 @@ pv_kw = df["pv_now_kw"].iloc[i0:i1].to_numpy(dtype=float)
 ts = pd.date_range(now_ts, periods=len(pv_kw), freq=f"{DT_MINUTES_DEFAULT}min")
 
 fig = plot_power_and_energy(ts, pv_kw, DT_MINUTES_DEFAULT)
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 # Load vs served (less technical phrasing)
 st.markdown("### Household Power Use")
@@ -405,7 +406,7 @@ fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["load_requested_kw"], mode="lines",
 fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["load_served_kw"], mode="lines", name="Served load (kW)"))
 fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_now_kw"], mode="lines", name="Solar power (kW)"))
 fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, width="stretch")
 
 # Appliance advisory panel (§5.4: Status Allowed / Delay / Avoid; green = safe, red = avoid; no physical switching)
 st.markdown("### Appliance Advisory (Now)")
@@ -415,7 +416,7 @@ qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
 
 soc = float(row.get("soc_now", 0.0))
-reserve = float(SystemConfig().soc_min)
+reserve = float(row.get("soc_min", 0.25))  # schema default; state CSV may not have soc_min
 pv_now = float(row.get("pv_now_kw", 0.0))
 risk_lower = str(risk).lower()
 
@@ -454,7 +455,7 @@ def _style_advisory(v: str):
     if v == "Delay":
         return "background-color: rgba(234,179,8,0.12)"
     return ""
-st.dataframe(adv.style.applymap(_style_advisory, subset=["Status"]), use_container_width=True, hide_index=True)
+st.dataframe(adv.style.applymap(_style_advisory, subset=["Status"]), width="stretch", hide_index=True)
 
 # Schedule heatmap (log-driven; §2.2 Digital twin replay)
 st.markdown("### Recommended Schedule (Heatmap)")
@@ -501,16 +502,16 @@ else:
     x_labels = [f"{(i*DT_MINUTES_DEFAULT)//60:02d}:{(i*DT_MINUTES_DEFAULT)%60:02d}" for i in range(steps_in_day)]
     fig_hm = go.Figure(data=go.Heatmap(z=matrix, x=x_labels, y=apps))
     fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10))
-    st.plotly_chart(fig_hm, use_container_width=True)
+    st.plotly_chart(fig_hm, width="stretch")
 
 # Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
 st.markdown("### Downloads")
 st.caption("Evidence artifacts for reproducibility. PDF includes system summary, weather context, today + tomorrow plan, KPIs, and advisory disclaimer.")
 dcols = st.columns([2, 2, 2])
 with dcols[0]:
-    st.download_button("Download state log (CSV)", data=Path(state_csv).read_bytes(), file_name="state_log.csv", mime="text/csv", use_container_width=True)
+    st.download_button("Download state log (CSV)", data=Path(state_csv).read_bytes(), file_name="state_log.csv", mime="text/csv", width="stretch")
 with dcols[1]:
-    st.download_button("Download guidance log (JSONL)", data=Path(guidance_jsonl).read_bytes(), file_name="guidance_log.jsonl", mime="application/jsonl", use_container_width=True)
+    st.download_button("Download guidance log (JSONL)", data=Path(guidance_jsonl).read_bytes(), file_name="guidance_log.jsonl", mime="application/jsonl", width="stretch")
 
 system_summary_for_pdf = {
     "Location": str(st.session_state.get("location_name", "")) or "Configured location",
@@ -527,4 +528,4 @@ pdf_bytes = build_two_day_plan_pdf_from_logs(
     system_summary_override=system_summary_for_pdf,
 )
 with dcols[2]:
-    st.download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf", use_container_width=True)
+    st.download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf", width="stretch")
