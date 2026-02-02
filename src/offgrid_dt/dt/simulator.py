@@ -16,6 +16,7 @@ from offgrid_dt.forecast.openweather import synthetic_irradiance_forecast
 from offgrid_dt.forecast.pv_power import irradiance_to_pv_power_kw
 from offgrid_dt.io.logger import RunLogger
 from offgrid_dt.io.schema import Appliance, StepRecord, SystemConfig
+from offgrid_dt.matching import compute_day_ahead_matching
 from offgrid_dt.metrics.kpis import KPITracker
 from offgrid_dt.xai.explain import ExplanationContext, enhance_explanation_with_openai, generate_guidance
 
@@ -257,4 +258,22 @@ def simulate(
     out = logger.flush(prefix=prefix)
     if out:
         out["start_time"] = start.isoformat()
+        # Day-ahead matching: compare expected demand vs solar for first planning day
+        try:
+            import pandas as pd
+            state_path = out.get("state_csv")
+            if state_path:
+                mdf = pd.read_csv(state_path)
+                first_day_df = mdf.head(steps_per_day)
+                matching = compute_day_ahead_matching(
+                    first_day_df,
+                    appliances,
+                    cfg,
+                    inverter_max_kw=cfg.inverter_max_kw,
+                    timestep_minutes=cfg.timestep_minutes,
+                    day_start_ts=start,
+                )
+                out["matching_first_day"] = matching
+        except Exception as e:
+            log.warning("Day-ahead matching failed: %s", e)
     return out

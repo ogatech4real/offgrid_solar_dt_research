@@ -21,6 +21,7 @@ from offgrid_dt.dt.simulator import simulate
 from offgrid_dt.forecast.openweather import OpenWeatherSolarClient
 from offgrid_dt.io.schema import Appliance, SystemConfig
 from offgrid_dt.io.pdf_report import build_two_day_plan_pdf_from_logs
+from offgrid_dt.matching import compute_day_ahead_matching
 
 st.set_page_config(page_title="Off-grid Solar DT", layout="wide")
 
@@ -377,6 +378,64 @@ st.session_state["replay_step"] = step
 row = df.iloc[step]
 now_ts = pd.to_datetime(row["ts"])
 
+# Day-ahead matching: expected demand vs expected solar (first planning day 00:00–24:00)
+matching = res.get("matching_first_day")
+if matching is None:
+    try:
+        cfg_ui = SystemConfig(
+            location_name=st.session_state.get("location_name", ""),
+            latitude=float(st.session_state.get("latitude", 0.0)),
+            longitude=float(st.session_state.get("longitude", 0.0)),
+            pv_capacity_kw=float(st.session_state.get("pv_kw", 3.0)),
+            battery_capacity_kwh=float(st.session_state.get("bat_kwh", 5.0)),
+            inverter_max_kw=float(st.session_state.get("inv_kw", 2.5)),
+            timestep_minutes=DT_MINUTES_DEFAULT,
+            horizon_steps=48,
+        )
+        appliances_ui = _build_appliances(st.session_state.get("selected_appliances", []), st.session_state.get("qty_map", {}))
+        steps_per_day_ui = int(24 * 60 / DT_MINUTES_DEFAULT)
+        first_day_df = df.head(steps_per_day_ui)
+        matching = compute_day_ahead_matching(first_day_df, appliances_ui, cfg_ui, cfg_ui.inverter_max_kw, DT_MINUTES_DEFAULT)
+    except Exception:
+        matching = None
+
+# ---------------------------- Day-ahead outlook (matching layer) ----------------------------
+st.markdown("### Day-ahead outlook (00:00–24:00)")
+st.caption("Expected demand vs expected solar for the next planning day. Advisory only — uncertainty applies.")
+if matching:
+    risk_matching = str(matching.risk_level).lower()
+    risk_cls = {"low": "low", "medium": "med", "high": "high"}.get(risk_matching, "")
+    st.markdown(f'<div class="card"><p class="kpi">{matching.daily_outlook_text}</p></div>', unsafe_allow_html=True)
+    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+    with mcol1:
+        st.metric("Expected solar (24h)", f"{matching.total_solar_kwh:.2f} kWh")
+    with mcol2:
+        st.metric("Planned demand (24h)", f"{matching.total_demand_kwh:.2f} kWh")
+    with mcol3:
+        margin_label = f"{matching.energy_margin_kwh:+.2f} kWh"
+        st.metric("Energy margin", margin_label)
+    with mcol4:
+        st.markdown(f'<span class="pill {risk_cls}">Risk: {matching.risk_level.title()}</span>', unsafe_allow_html=True)
+    with st.expander("Surplus and deficit windows (solar ≥ demand vs demand > solar)"):
+        def _fmt_tw(tw):
+            start_min = tw.start_step * matching.timestep_minutes
+            end_min = (tw.end_step + 1) * matching.timestep_minutes
+            sh, sm = divmod(start_min, 60)
+            eh, em = divmod(end_min, 60)
+            return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
+        if matching.surplus_windows:
+            st.markdown("**Surplus windows** (solar ≥ demand): " + ", ".join(_fmt_tw(tw) for tw in matching.surplus_windows))
+        else:
+            st.caption("No surplus windows in the first 24h.")
+        if matching.deficit_windows:
+            st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw) for tw in matching.deficit_windows))
+        else:
+            st.caption("No deficit windows.")
+    if not matching.critical_fully_protected:
+        st.warning("Critical loads are not fully protected in all timesteps. Prioritise essentials only.")
+else:
+    st.caption("Run the digital twin to see day-ahead matching.")
+
 # Weather snapshot
 weather = None
 if client:
@@ -471,17 +530,24 @@ with gcol2:
                 f'<div class="kpi">{soc_pct:.0f}% SOC · {battery_state_label}</div>'
                 '<div class="muted">Reserve protected automatically (advisory only)</div></div>', unsafe_allow_html=True)
 
-# Forecast plot: PV power + cumulative energy for next 24/48h from replay point (§5.3: labeled as forecast, not certainty)
-st.markdown("### Expected Solar Availability (Day-Ahead)")
-st.caption("Expected solar for the next day(s) from NASA POWER (GHI). Forecast, not certainty — recommendations are advisory and robust to uncertainty. Use for planning only.")
-horizon_hours = st.radio("Forecast window", [24, 48], horizontal=True)
+# Solar forecast chart: next 24h (first planning day) — power profile + cumulative energy
+st.markdown("### Solar forecast: next 24h (first planning day)")
+st.caption("Expected solar for the next day (00:00–24:00) from NASA POWER (GHI). Power profile and cumulative energy — forecast, not certainty.")
+steps_24h = int(24 * 60 / DT_MINUTES_DEFAULT)
+df_first_day = df.head(steps_24h)
+pv_kw_24h = df_first_day["pv_now_kw"].to_numpy(dtype=float)
+ts_24h = pd.to_datetime(df_first_day["ts"])
+fig_24h = plot_power_and_energy(ts_24h, pv_kw_24h, DT_MINUTES_DEFAULT)
+st.plotly_chart(fig_24h, width="stretch")
+
+# Optional: 24h or 48h from replay point
+st.markdown("#### Forecast from replay point (24h or 48h)")
+horizon_hours = st.radio("Forecast window", [24, 48], horizontal=True, key="forecast_horizon")
 steps = int(horizon_hours * 60 / DT_MINUTES_DEFAULT)
 i0 = step
 i1 = min(i0 + steps, len(df))
-
 pv_kw = df["pv_now_kw"].iloc[i0:i1].to_numpy(dtype=float)
 ts = pd.date_range(now_ts, periods=len(pv_kw), freq=f"{DT_MINUTES_DEFAULT}min")
-
 fig = plot_power_and_energy(ts, pv_kw, DT_MINUTES_DEFAULT)
 st.plotly_chart(fig, width="stretch")
 
@@ -495,54 +561,50 @@ fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_now_kw"], mode="lines", name="S
 fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
 st.plotly_chart(fig2, width="stretch")
 
-# Appliance advisory panel (§5.4: Status Allowed / Delay / Avoid; green = safe, red = avoid; no physical switching)
-st.markdown("### Appliance Advisory (Now)")
-st.caption("Advisory only — no automatic control. Green = safe to run, red = avoid now.")
+# Appliance advisory: from day-ahead matching (surplus/deficit windows + priority)
+st.markdown("### Appliance advisory (day-ahead)")
+st.caption("Derived from surplus/deficit windows and load priority — traceable to matching, not opaque AI. Advisory only.")
 selected_appliances = st.session_state.get("selected_appliances", [])
 qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
 
-soc = float(row.get("soc_now", 0.0))
-reserve = float(row.get("soc_min", 0.25))  # schema default; state CSV may not have soc_min
-pv_now = float(row.get("pv_now_kw", 0.0))
-risk_lower = str(risk).lower()
-
-records = []
-for name in selected_appliances:
-    a = catalog[name]
-    q = int(qty_map.get(a.id, 1))
-    watts = float(a.power_w) * q
-    kw = watts / 1000.0
-    # §5.4: Status Allowed / Delay / Avoid
-    status = "Allowed"
-    note = "Safe to use"
-    if a.category != "critical" and (soc <= reserve + 0.05 or risk_lower == "high"):
-        status = "Avoid"
-        note = "Preserve battery reserve for essentials"
-    elif a.category != "critical" and risk_lower == "medium" and soc <= reserve + 0.12:
-        status = "Delay"
-        note = "Prefer waiting until solar improves or SOC rises"
-    elif a.category != "critical" and pv_now > 0.5 and soc > reserve + 0.1 and risk_lower == "low":
-        status = "Allowed"
-        note = "Good time — strong solar; prefer this window"
-    records.append({
-        "Appliance": f"{a.name} (x{q})",
-        "Category": category_badge(a.category),
-        "Power": f"{kw:.2f} kW",
-        "Status": status,
-        "Why": note,
-    })
-
-adv = pd.DataFrame(records)
-def _style_advisory(v: str):
-    if v == "Avoid":
-        return "background-color: rgba(239,68,68,0.12)"
-    if v == "Allowed":
-        return "background-color: rgba(34,197,94,0.12)"
-    if v == "Delay":
-        return "background-color: rgba(234,179,8,0.12)"
-    return ""
-st.dataframe(adv.style.applymap(_style_advisory, subset=["Status"]), width="stretch", hide_index=True)
+if matching and matching.appliance_advisories:
+    adv_by_name = {adv.name: adv for adv in matching.appliance_advisories}
+    records = []
+    for name in selected_appliances:
+        a = catalog.get(name)
+        if not a:
+            continue
+        q = int(qty_map.get(a.id, 1))
+        kw = (float(a.power_w) * q) / 1000.0
+        adv = adv_by_name.get(a.name)
+        if adv:
+            status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in recommended window", "avoid_today": "Avoid today"}.get(adv.status, adv.status)
+            note = adv.reason
+            if adv.recommended_window:
+                note = f"{adv.reason} Window: {adv.recommended_window}."
+        else:
+            status_display = "—"
+            note = "No matching advisory."
+        records.append({
+            "Appliance": f"{a.name} (x{q})",
+            "Category": category_badge(a.category),
+            "Power": f"{kw:.2f} kW",
+            "Status": status_display,
+            "Why": note,
+        })
+    adv = pd.DataFrame(records)
+    def _style_advisory(v: str):
+        if v == "Avoid today":
+            return "background-color: rgba(239,68,68,0.12)"
+        if v == "Safe to run":
+            return "background-color: rgba(34,197,94,0.12)"
+        if v == "Run in recommended window":
+            return "background-color: rgba(234,179,8,0.12)"
+        return ""
+    st.dataframe(adv.style.applymap(_style_advisory, subset=["Status"]), width="stretch", hide_index=True)
+else:
+    st.caption("Run the digital twin to see appliance advisories from day-ahead matching.")
 
 # Schedule heatmap (log-driven; §2.2 Digital twin replay)
 st.markdown("### Recommended Schedule (Heatmap)")
@@ -608,12 +670,14 @@ system_summary_for_pdf = {
     "Solar source": "NASA POWER (day-ahead GHI)",
 }
 weather_summary = weather if weather else {}
+matching_for_pdf = res.get("matching_first_day")
 pdf_bytes = build_two_day_plan_pdf_from_logs(
     state_csv_path=state_csv,
     guidance_jsonl_path=guidance_jsonl,
     title="Solar-first Household Plan (Today + Tomorrow)",
     weather_summary=weather_summary,
     system_summary_override=system_summary_for_pdf,
+    matching_result=matching_for_pdf,
 )
 with dcols[2]:
     st.download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf", width="stretch")

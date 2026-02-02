@@ -140,6 +140,9 @@ def build_two_day_plan_pdf(
     recommendations_tomorrow: Optional[Dict[str, str]] = None,
     schedule_rows_tomorrow: Optional[List[Dict[str, str]]] = None,
     tomorrow_outlook: Optional[Dict[str, str]] = None,
+    day_ahead_outlook_text: Optional[str] = None,
+    day_ahead_risk: Optional[str] = None,
+    appliance_advisory_rows: Optional[List[Dict[str, str]]] = None,
     notes: Optional[str] = None,
 ) -> bytes:
     """Create a two-day (Today + Tomorrow) PDF handout.
@@ -180,6 +183,38 @@ def build_two_day_plan_pdf(
         y -= 0.45 * cm
 
     y -= 0.35 * cm
+
+    # Day-ahead outlook (matching: demand vs solar)
+    if day_ahead_outlook_text or day_ahead_risk:
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x0, y, "Day-ahead outlook (00:00–24:00)")
+        y -= 0.55 * cm
+        c.setFont("Helvetica", 10)
+        if day_ahead_outlook_text:
+            y = _draw_paragraph(c, x0, y, day_ahead_outlook_text, max_width=w - 2 * x0, leading=12)
+            y -= 0.2 * cm
+        if day_ahead_risk:
+            c.drawString(x0, y, f"Risk: {day_ahead_risk}")
+            y -= 0.45 * cm
+        y -= 0.2 * cm
+    if appliance_advisory_rows:
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(x0, y, "Appliance advisories (day-ahead)")
+        y -= 0.5 * cm
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x0, y, "Appliance")
+        c.drawString(x0 + 5.0 * cm, y, "Status")
+        c.drawString(x0 + 9.0 * cm, y, "Reason")
+        y -= 0.35 * cm
+        c.line(x0, y, w - x0, y)
+        y -= 0.35 * cm
+        c.setFont("Helvetica", 9)
+        for r in appliance_advisory_rows[:20]:
+            c.drawString(x0, y, str(r.get("name", ""))[:25])
+            c.drawString(x0 + 5.0 * cm, y, str(r.get("status", ""))[:18])
+            c.drawString(x0 + 9.0 * cm, y, str(r.get("reason", ""))[:35])
+            y -= 0.4 * cm
+        y -= 0.25 * cm
 
     # Today recommendation
     c.setFont("Helvetica-Bold", 12)
@@ -422,6 +457,7 @@ def build_two_day_plan_pdf_from_logs(
     title: str = "Solar-first Household Plan (Today + Tomorrow)",
     weather_summary: Optional[Dict[str, object]] = None,
     system_summary_override: Optional[Dict[str, str]] = None,
+    matching_result: Optional[object] = None,
 ) -> bytes:
     """Convenience wrapper: build a two-day PDF from the standard DT logs.
 
@@ -564,6 +600,32 @@ def build_two_day_plan_pdf_from_logs(
                 "Expected demand": f"{load_kwh:.1f} kWh",
             }
 
+    # Day-ahead matching: outlook and appliance advisories
+    day_ahead_outlook_text = None
+    day_ahead_risk = None
+    appliance_advisory_rows = None
+    if matching_result is not None:
+        if hasattr(matching_result, "daily_outlook_text"):
+            day_ahead_outlook_text = matching_result.daily_outlook_text
+            day_ahead_risk = getattr(matching_result, "risk_level", None)
+            if hasattr(matching_result, "appliance_advisories") and matching_result.appliance_advisories:
+                status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in window", "avoid_today": "Avoid today"}
+                appliance_advisory_rows = []
+                for a in matching_result.appliance_advisories:
+                    name = getattr(a, "name", "") if hasattr(a, "name") else (a.get("name", "") if isinstance(a, dict) else "")
+                    status = getattr(a, "status", "") if hasattr(a, "status") else (a.get("status", "") if isinstance(a, dict) else "")
+                    reason = getattr(a, "reason", "") if hasattr(a, "reason") else (a.get("reason", "") if isinstance(a, dict) else "")
+                    appliance_advisory_rows.append({"name": name, "status": status_display.get(status, status), "reason": (reason or "")[:50]})
+        elif isinstance(matching_result, dict):
+            day_ahead_outlook_text = matching_result.get("daily_outlook_text")
+            day_ahead_risk = matching_result.get("risk_level")
+            advs = matching_result.get("appliance_advisories") or []
+            status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in window", "avoid_today": "Avoid today"}
+            appliance_advisory_rows = [
+                {"name": a.get("name", ""), "status": status_display.get(a.get("status"), a.get("status", "")), "reason": (a.get("reason") or "")[:50]}
+                for a in advs
+            ]
+
     return build_two_day_plan_pdf(
         title=title,
         system_summary=system_summary,
@@ -573,5 +635,8 @@ def build_two_day_plan_pdf_from_logs(
         recommendations_tomorrow=recommendations_tomorrow,
         schedule_rows_tomorrow=schedule_rows_tomorrow,
         tomorrow_outlook=tomorrow_outlook,
+        day_ahead_outlook_text=day_ahead_outlook_text,
+        day_ahead_risk=day_ahead_risk,
+        appliance_advisory_rows=appliance_advisory_rows,
         notes=ADVISORY_DISCLAIMER,
     )
