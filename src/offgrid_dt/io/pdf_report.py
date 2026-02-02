@@ -187,14 +187,14 @@ def build_two_day_plan_pdf(
     # Day-ahead outlook (matching: demand vs solar)
     if day_ahead_outlook_text or day_ahead_risk:
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(x0, y, "Day-ahead outlook (00:00–24:00)")
+        c.drawString(x0, y, "Day-ahead outlook (00:00-24:00)")
         y -= 0.55 * cm
         c.setFont("Helvetica", 10)
         if day_ahead_outlook_text:
-            y = _draw_paragraph(c, x0, y, day_ahead_outlook_text, max_width=w - 2 * x0, leading=12)
+            y = _draw_paragraph(c, x0, y, str(day_ahead_outlook_text), max_width=w - 2 * x0, leading=12)
             y -= 0.2 * cm
         if day_ahead_risk:
-            c.drawString(x0, y, f"Risk: {day_ahead_risk}")
+            c.drawString(x0, y, "Risk: " + str(day_ahead_risk))
             y -= 0.45 * cm
         y -= 0.2 * cm
     if appliance_advisory_rows:
@@ -210,9 +210,9 @@ def build_two_day_plan_pdf(
         y -= 0.35 * cm
         c.setFont("Helvetica", 9)
         for r in appliance_advisory_rows[:20]:
-            c.drawString(x0, y, str(r.get("name", ""))[:25])
-            c.drawString(x0 + 5.0 * cm, y, str(r.get("status", ""))[:18])
-            c.drawString(x0 + 9.0 * cm, y, str(r.get("reason", ""))[:35])
+            c.drawString(x0, y, (str(r.get("name") or ""))[:25])
+            c.drawString(x0 + 5.0 * cm, y, (str(r.get("status") or ""))[:18])
+            c.drawString(x0 + 9.0 * cm, y, (str(r.get("reason") or ""))[:35])
             y -= 0.4 * cm
         y -= 0.25 * cm
 
@@ -600,31 +600,40 @@ def build_two_day_plan_pdf_from_logs(
                 "Expected demand": f"{load_kwh:.1f} kWh",
             }
 
-    # Day-ahead matching: outlook and appliance advisories
+    # Day-ahead matching: outlook and appliance advisories (accept only dict for serializability)
     day_ahead_outlook_text = None
     day_ahead_risk = None
     appliance_advisory_rows = None
     if matching_result is not None:
-        if hasattr(matching_result, "daily_outlook_text"):
-            day_ahead_outlook_text = matching_result.daily_outlook_text
-            day_ahead_risk = getattr(matching_result, "risk_level", None)
-            if hasattr(matching_result, "appliance_advisories") and matching_result.appliance_advisories:
+        try:
+            if isinstance(matching_result, dict):
+                day_ahead_outlook_text = matching_result.get("daily_outlook_text")
+                day_ahead_risk = matching_result.get("risk_level")
+                advs = matching_result.get("appliance_advisories") or []
                 status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in window", "avoid_today": "Avoid today"}
                 appliance_advisory_rows = []
-                for a in matching_result.appliance_advisories:
-                    name = getattr(a, "name", "") if hasattr(a, "name") else (a.get("name", "") if isinstance(a, dict) else "")
-                    status = getattr(a, "status", "") if hasattr(a, "status") else (a.get("status", "") if isinstance(a, dict) else "")
-                    reason = getattr(a, "reason", "") if hasattr(a, "reason") else (a.get("reason", "") if isinstance(a, dict) else "")
-                    appliance_advisory_rows.append({"name": name, "status": status_display.get(status, status), "reason": (reason or "")[:50]})
-        elif isinstance(matching_result, dict):
-            day_ahead_outlook_text = matching_result.get("daily_outlook_text")
-            day_ahead_risk = matching_result.get("risk_level")
-            advs = matching_result.get("appliance_advisories") or []
-            status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in window", "avoid_today": "Avoid today"}
-            appliance_advisory_rows = [
-                {"name": a.get("name", ""), "status": status_display.get(a.get("status"), a.get("status", "")), "reason": (a.get("reason") or "")[:50]}
-                for a in advs
-            ]
+                for a in advs:
+                    if not isinstance(a, dict):
+                        continue
+                    name = str(a.get("name") or "")[:50]
+                    status = status_display.get(a.get("status"), str(a.get("status") or ""))[:20]
+                    reason = str(a.get("reason") or "")[:50]
+                    appliance_advisory_rows.append({"name": name, "status": status, "reason": reason})
+            elif hasattr(matching_result, "daily_outlook_text"):
+                day_ahead_outlook_text = str(matching_result.daily_outlook_text or "")
+                day_ahead_risk = str(getattr(matching_result, "risk_level", "") or "")
+                if hasattr(matching_result, "appliance_advisories") and matching_result.appliance_advisories:
+                    status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in window", "avoid_today": "Avoid today"}
+                    appliance_advisory_rows = []
+                    for a in matching_result.appliance_advisories:
+                        name = (getattr(a, "name", None) or (a.get("name") if isinstance(a, dict) else None) or "")
+                        status = getattr(a, "status", None) or (a.get("status") if isinstance(a, dict) else None) or ""
+                        reason = getattr(a, "reason", None) or (a.get("reason") if isinstance(a, dict) else None) or ""
+                        appliance_advisory_rows.append({"name": str(name)[:50], "status": status_display.get(status, str(status))[:20], "reason": str(reason)[:50]})
+        except Exception:
+            day_ahead_outlook_text = None
+            day_ahead_risk = None
+            appliance_advisory_rows = None
 
     return build_two_day_plan_pdf(
         title=title,

@@ -273,7 +273,7 @@ def simulate(
                     timestep_minutes=cfg.timestep_minutes,
                     day_start_ts=start,
                 )
-                out["matching_first_day"] = matching
+                out["matching_first_day"] = matching.to_dict()
         except Exception as e:
             log.warning("Day-ahead matching failed: %s", e)
     return out

@@ -15,6 +15,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 from offgrid_dt.control.controllers import get_controllers
 from offgrid_dt.dt.simulator import simulate
@@ -132,12 +133,10 @@ _inject_css()
 st.markdown('<div class="app-title">Off-grid Solar Decision Support</div>', unsafe_allow_html=True)
 st.markdown('<p class="app-sub">Day-ahead energy planning using NASA POWER solar data. Survivability-first, advisory guidance — not real-time control.</p>', unsafe_allow_html=True)
 
-# Optional auto-refresh (every 15 minutes)
+# Optional auto-refresh (every 15 minutes) — triggers full rerun so "run if last run >14 min" runs
 auto_enabled = st.session_state.get("auto_enabled", False)
 if auto_enabled:
-    st_autorefresh = getattr(st, "autorefresh", None)
-    if st_autorefresh:
-        st_autorefresh(interval=AUTO_REFRESH_MS, key="dt_autorefresh")
+    st_autorefresh(interval=AUTO_REFRESH_MS, key="dt_autorefresh")
 
 client = get_openweather_client()
 
@@ -196,7 +195,7 @@ with st.sidebar:
 
     # Run modes
     st.subheader("Run Mode")
-    auto_enabled = st.toggle("Auto-run every 15 minutes", value=auto_enabled)
+    auto_enabled = st.toggle("Auto-run every 15 minutes", value=auto_enabled, help="Refreshes the app every 15 min and re-runs the day-ahead plan if the last run was more than 14 min ago.")
     st.session_state["auto_enabled"] = auto_enabled
 
     _controllers_list = get_controllers()
@@ -205,11 +204,11 @@ with st.sidebar:
     controller_name = st.selectbox("Control strategy", controller_names, index=controller_names.index(st.session_state.get("controller_name", "forecast_heuristic")) if st.session_state.get("controller_name", "forecast_heuristic") in controller_names else 0)
     st.session_state["controller_name"] = controller_name
 
-    days = st.selectbox("Simulation days (for replay + tomorrow plan)", [2, 3, 7], index=0)
+    days = st.selectbox("Planning horizon (days)", [2, 3, 7], index=0, help="Number of days to simulate for replay and day-ahead plan (first day = next planning day).")
     st.session_state["sim_days"] = days
 
     run_btn = st.button("Run digital twin now", type="primary")
-    demo_btn = st.button("Run demo (2 days)", help="Quick-start run with defaults to explore the dashboard.")
+    demo_btn = st.button("Run demo (2 days)", help="Day-ahead planning demo — explore the dashboard with default location and 2 days.")
     if demo_btn:
         st.session_state["loc_query"] = st.session_state.get("loc_query", "London")
         st.session_state["latitude"] = st.session_state.get("latitude", 51.5074)
@@ -379,6 +378,7 @@ row = df.iloc[step]
 now_ts = pd.to_datetime(row["ts"])
 
 # Day-ahead matching: expected demand vs expected solar (first planning day 00:00–24:00)
+# Simulator stores matching as dict; fallback compute returns object — normalize for display
 matching = res.get("matching_first_day")
 if matching is None:
     try:
@@ -399,39 +399,52 @@ if matching is None:
     except Exception:
         matching = None
 
+def _m(v, key, default=None):
+    if v is None: return default
+    return v.get(key, default) if isinstance(v, dict) else getattr(v, key, default)
+
+def _fmt_tw(tw, step_min):
+    if isinstance(tw, dict):
+        s, e = tw.get("start_step", 0), tw.get("end_step", 0)
+    else:
+        s, e = tw.start_step, tw.end_step
+    start_min = s * step_min
+    end_min = (e + 1) * step_min
+    sh, sm = divmod(start_min, 60)
+    eh, em = divmod(end_min, 60)
+    return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
+
 # ---------------------------- Day-ahead outlook (matching layer) ----------------------------
 st.markdown("### Day-ahead outlook (00:00–24:00)")
 st.caption("Expected demand vs expected solar for the next planning day. Advisory only — uncertainty applies.")
 if matching:
-    risk_matching = str(matching.risk_level).lower()
+    step_min = _m(matching, "timestep_minutes", DT_MINUTES_DEFAULT)
+    risk_val = _m(matching, "risk_level", "")
+    risk_matching = str(risk_val).lower()
     risk_cls = {"low": "low", "medium": "med", "high": "high"}.get(risk_matching, "")
-    st.markdown(f'<div class="card"><p class="kpi">{matching.daily_outlook_text}</p></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="card"><p class="kpi">{_m(matching, "daily_outlook_text", "")}</p></div>', unsafe_allow_html=True)
     mcol1, mcol2, mcol3, mcol4 = st.columns(4)
     with mcol1:
-        st.metric("Expected solar (24h)", f"{matching.total_solar_kwh:.2f} kWh")
+        st.metric("Expected solar (24h)", f"{float(_m(matching, 'total_solar_kwh', 0)):.2f} kWh")
     with mcol2:
-        st.metric("Planned demand (24h)", f"{matching.total_demand_kwh:.2f} kWh")
+        st.metric("Planned demand (24h)", f"{float(_m(matching, 'total_demand_kwh', 0)):.2f} kWh")
     with mcol3:
-        margin_label = f"{matching.energy_margin_kwh:+.2f} kWh"
+        margin_label = f"{float(_m(matching, 'energy_margin_kwh', 0)):+.2f} kWh"
         st.metric("Energy margin", margin_label)
     with mcol4:
-        st.markdown(f'<span class="pill {risk_cls}">Risk: {matching.risk_level.title()}</span>', unsafe_allow_html=True)
+        st.markdown(f'<span class="pill {risk_cls}">Risk: {str(risk_val).title()}</span>', unsafe_allow_html=True)
     with st.expander("Surplus and deficit windows (solar ≥ demand vs demand > solar)"):
-        def _fmt_tw(tw):
-            start_min = tw.start_step * matching.timestep_minutes
-            end_min = (tw.end_step + 1) * matching.timestep_minutes
-            sh, sm = divmod(start_min, 60)
-            eh, em = divmod(end_min, 60)
-            return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
-        if matching.surplus_windows:
-            st.markdown("**Surplus windows** (solar ≥ demand): " + ", ".join(_fmt_tw(tw) for tw in matching.surplus_windows))
+        sur = _m(matching, "surplus_windows") or []
+        def_ = _m(matching, "deficit_windows") or []
+        if sur:
+            st.markdown("**Surplus windows** (solar ≥ demand): " + ", ".join(_fmt_tw(tw, step_min) for tw in sur))
         else:
             st.caption("No surplus windows in the first 24h.")
-        if matching.deficit_windows:
-            st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw) for tw in matching.deficit_windows))
+        if def_:
+            st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw, step_min) for tw in def_))
         else:
             st.caption("No deficit windows.")
-    if not matching.critical_fully_protected:
+    if not _m(matching, "critical_fully_protected", True):
         st.warning("Critical loads are not fully protected in all timesteps. Prioritise essentials only.")
 else:
     st.caption("Run the digital twin to see day-ahead matching.")
@@ -502,6 +515,7 @@ else:
 
 # Guidance display (align by step index; guidance JSONL has same row count as state CSV)
 st.markdown("### Recommendation")
+st.caption("Day-ahead risk (above) summarizes the full planning day; the risk below is for the current replay step.")
 gdf = pd.read_json(guidance_jsonl, lines=True)
 if "timestamp" in gdf.columns:
     gdf["ts"] = pd.to_datetime(gdf["timestamp"], utc=True)
@@ -568,8 +582,13 @@ selected_appliances = st.session_state.get("selected_appliances", [])
 qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
 
-if matching and matching.appliance_advisories:
-    adv_by_name = {adv.name: adv for adv in matching.appliance_advisories}
+adv_list = _m(matching, "appliance_advisories") or [] if matching else []
+if matching and adv_list:
+    adv_by_name = {}
+    for adv in adv_list:
+        n = adv.get("name", "") if isinstance(adv, dict) else getattr(adv, "name", "")
+        if n:
+            adv_by_name[n] = adv
     records = []
     for name in selected_appliances:
         a = catalog.get(name)
@@ -579,10 +598,13 @@ if matching and matching.appliance_advisories:
         kw = (float(a.power_w) * q) / 1000.0
         adv = adv_by_name.get(a.name)
         if adv:
-            status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in recommended window", "avoid_today": "Avoid today"}.get(adv.status, adv.status)
-            note = adv.reason
-            if adv.recommended_window:
-                note = f"{adv.reason} Window: {adv.recommended_window}."
+            status_raw = adv.get("status", "") if isinstance(adv, dict) else getattr(adv, "status", "")
+            status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in recommended window", "avoid_today": "Avoid today"}.get(status_raw, status_raw)
+            reason = adv.get("reason", "") if isinstance(adv, dict) else getattr(adv, "reason", "")
+            rec_win = adv.get("recommended_window") if isinstance(adv, dict) else getattr(adv, "recommended_window", None)
+            note = reason
+            if rec_win:
+                note = f"{reason} Window: {rec_win}."
         else:
             status_display = "—"
             note = "No matching advisory."
@@ -670,14 +692,34 @@ system_summary_for_pdf = {
     "Solar source": "NASA POWER (day-ahead GHI)",
 }
 weather_summary = weather if weather else {}
-matching_for_pdf = res.get("matching_first_day")
-pdf_bytes = build_two_day_plan_pdf_from_logs(
-    state_csv_path=state_csv,
-    guidance_jsonl_path=guidance_jsonl,
-    title="Solar-first Household Plan (Today + Tomorrow)",
-    weather_summary=weather_summary,
-    system_summary_override=system_summary_for_pdf,
-    matching_result=matching_for_pdf,
-)
+# Pass matching as dict so PDF builder gets a serializable format (avoids TypeError on Cloud/serialization)
+raw_matching = res.get("matching_first_day")
+matching_for_pdf = None
+if raw_matching is not None:
+    if hasattr(raw_matching, "to_dict"):
+        try:
+            matching_for_pdf = raw_matching.to_dict()
+        except Exception:
+            matching_for_pdf = None
+    elif isinstance(raw_matching, dict):
+        matching_for_pdf = raw_matching
+try:
+    pdf_bytes = build_two_day_plan_pdf_from_logs(
+        state_csv_path=state_csv,
+        guidance_jsonl_path=guidance_jsonl,
+        title="Solar-first Household Plan (Today + Tomorrow)",
+        weather_summary=weather_summary,
+        system_summary_override=system_summary_for_pdf,
+        matching_result=matching_for_pdf,
+    )
+except Exception:
+    pdf_bytes = build_two_day_plan_pdf_from_logs(
+        state_csv_path=state_csv,
+        guidance_jsonl_path=guidance_jsonl,
+        title="Solar-first Household Plan (Today + Tomorrow)",
+        weather_summary=weather_summary,
+        system_summary_override=system_summary_for_pdf,
+        matching_result=None,
+    )
 with dcols[2]:
     st.download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf", width="stretch")
