@@ -221,12 +221,7 @@ with st.sidebar:
 st.markdown("### Load — distribution board")
 st.caption("Switch loads on/off as if they were circuits on a distribution board. Total load updates from your selection. Advisory only — no physical switching.")
 catalog = appliance_catalog()
-# Initialize toggle state: critical ON by default, rest OFF
-for a in catalog:
-    if f"load_on_{a.id}" not in st.session_state:
-        st.session_state[f"load_on_{a.id}"] = a.category == "critical"
-    if f"qty_{a.id}" not in st.session_state:
-        st.session_state[f"qty_{a.id}"] = 1
+# Toggle and qty widgets own their keys (load_on_*, qty_*); do not set them via session_state.
 
 total_load_w = 0.0
 selected_names = []
@@ -266,14 +261,11 @@ st.markdown("#### Running hours (per day)")
 st.caption("Hours per day each group is expected to run. Used for 24h / 12h consumption estimate and planning. Critical default 24h; adjust for flexible and deferrable.")
 run_hrs_cols = st.columns(3)
 with run_hrs_cols[0]:
-    run_hrs_critical = st.number_input("Critical (h/day)", min_value=0.0, max_value=24.0, value=float(st.session_state.get("run_hrs_critical", 24.0)), step=0.5, key="run_hrs_critical")
-    st.session_state["run_hrs_critical"] = run_hrs_critical
+    run_hrs_critical = st.number_input("Critical (h/day)", min_value=0.0, max_value=24.0, value=24.0, step=0.5, key="run_hrs_critical")
 with run_hrs_cols[1]:
-    run_hrs_flexible = st.number_input("Flexible (h/day)", min_value=0.0, max_value=24.0, value=float(st.session_state.get("run_hrs_flexible", 4.0)), step=0.5, key="run_hrs_flexible")
-    st.session_state["run_hrs_flexible"] = run_hrs_flexible
+    run_hrs_flexible = st.number_input("Flexible (h/day)", min_value=0.0, max_value=24.0, value=4.0, step=0.5, key="run_hrs_flexible")
 with run_hrs_cols[2]:
-    run_hrs_deferrable = st.number_input("Deferrable (h/day)", min_value=0.0, max_value=24.0, value=float(st.session_state.get("run_hrs_deferrable", 2.0)), step=0.5, key="run_hrs_deferrable")
-    st.session_state["run_hrs_deferrable"] = run_hrs_deferrable
+    run_hrs_deferrable = st.number_input("Deferrable (h/day)", min_value=0.0, max_value=24.0, value=2.0, step=0.5, key="run_hrs_deferrable")
 
 # Estimated consumption for next 12h and 24h (00:00–24:00) based on load DB selections and running hours
 st.markdown("#### Estimated consumption (planning — next day 00:00–24:00)")
