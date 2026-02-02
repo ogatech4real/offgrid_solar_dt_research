@@ -261,6 +261,46 @@ st.markdown(f'<div class="load-board"><span class="load-total">Total load (selec
 st.session_state["selected_appliances"] = selected_names
 st.session_state["qty_map"] = qty_map
 
+# Running hours per group (per day, 00:00–24:00) — for planning and consumption estimate
+st.markdown("#### Running hours (per day)")
+st.caption("Hours per day each group is expected to run. Used for 24h / 12h consumption estimate and planning. Critical default 24h; adjust for flexible and deferrable.")
+run_hrs_cols = st.columns(3)
+with run_hrs_cols[0]:
+    run_hrs_critical = st.number_input("Critical (h/day)", min_value=0.0, max_value=24.0, value=float(st.session_state.get("run_hrs_critical", 24.0)), step=0.5, key="run_hrs_critical")
+    st.session_state["run_hrs_critical"] = run_hrs_critical
+with run_hrs_cols[1]:
+    run_hrs_flexible = st.number_input("Flexible (h/day)", min_value=0.0, max_value=24.0, value=float(st.session_state.get("run_hrs_flexible", 4.0)), step=0.5, key="run_hrs_flexible")
+    st.session_state["run_hrs_flexible"] = run_hrs_flexible
+with run_hrs_cols[2]:
+    run_hrs_deferrable = st.number_input("Deferrable (h/day)", min_value=0.0, max_value=24.0, value=float(st.session_state.get("run_hrs_deferrable", 2.0)), step=0.5, key="run_hrs_deferrable")
+    st.session_state["run_hrs_deferrable"] = run_hrs_deferrable
+
+# Estimated consumption for next 12h and 24h (00:00–24:00) based on load DB selections and running hours
+st.markdown("#### Estimated consumption (planning — next day 00:00–24:00)")
+st.caption("Energy (kWh) and average power (kW) for the next 12h and 24h based on selected loads and running hours above. Use for planning and comparison with forecast.")
+run_hrs_by_cat = {"critical": run_hrs_critical, "flexible": run_hrs_flexible, "deferrable": run_hrs_deferrable}
+energy_24h_kwh = 0.0
+for a in catalog:
+    if not st.session_state.get(f"load_on_{a.id}", False):
+        continue
+    qty = int(st.session_state.get(f"qty_{a.id}", 1))
+    power_kw = (float(a.power_w) * qty) / 1000.0
+    hrs = run_hrs_by_cat.get(a.category, 24.0)
+    energy_24h_kwh += power_kw * hrs
+energy_12h_kwh = energy_24h_kwh * (12.0 / 24.0)
+avg_power_24h_kw = energy_24h_kwh / 24.0 if energy_24h_kwh else 0.0
+avg_power_12h_kw = energy_12h_kwh / 12.0 if energy_12h_kwh else 0.0
+
+est_cols = st.columns(2)
+with est_cols[0]:
+    st.markdown("**Next 24h (00:00–24:00)**")
+    st.metric("Estimated energy", f"{energy_24h_kwh:.2f} kWh")
+    st.metric("Average power", f"{avg_power_24h_kw:.2f} kW")
+with est_cols[1]:
+    st.markdown("**Next 12h (00:00–12:00)**")
+    st.metric("Estimated energy", f"{energy_12h_kwh:.2f} kWh")
+    st.metric("Average power", f"{avg_power_12h_kw:.2f} kW")
+
 # Auto-run trigger on autorefresh
 if st.session_state.get("auto_enabled", False) and not run_btn:
     # Run if last run older than ~14 minutes
