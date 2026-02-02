@@ -219,6 +219,32 @@ with st.sidebar:
 
     st.caption("Solar input: NASA POWER (physics-based GHI for the next planning day). Location from OpenWeather geocoding.")
 
+# ---------------------------- Main: Current Weather (top; updates when location is set) ----------------------------
+st.markdown("### Current Weather")
+st.caption("Context for your location. Updates when you select or change location (not when you run the twin).")
+weather = None
+if client:
+    try:
+        lat_w = float(st.session_state.get("latitude", 0))
+        lon_w = float(st.session_state.get("longitude", 0))
+        if abs(lat_w) <= 90 and abs(lon_w) <= 180:
+            weather = client.current_weather(lat_w, lon_w)
+    except Exception:
+        weather = None
+st.session_state["current_weather"] = weather
+if weather:
+    wcols = st.columns([2, 2, 2, 2, 2])
+    icon_url = weather_icon_url(weather.get("icon", ""))
+    wcols[0].markdown(f"**Status**  \n{weather.get('description', '').title()}")
+    if icon_url:
+        wcols[0].image(icon_url, width=72)
+    wcols[1].metric("Temperature (°C)", f"{weather.get('temperature_c', 0):.1f}")
+    wcols[2].metric("Humidity (%)", f"{weather.get('humidity_pct', 0):.0f}")
+    wcols[3].metric("Cloud cover (%)", f"{weather.get('cloud_cover_pct', 0):.0f}")
+    wcols[4].metric("Wind (m/s)", f"{weather.get('wind_speed_mps', 0):.1f}")
+else:
+    st.caption("Set a location in the sidebar (search or lat/lon) and add an OpenWeather API key in secrets to see current weather.")
+
 # ---------------------------- Main: Load (distribution board) ----------------------------
 st.markdown("### Load — distribution board")
 st.caption("Switch loads on/off as if they were circuits on a distribution board. Total load updates from your selection. Advisory only — no physical switching.")
@@ -414,15 +440,27 @@ def _fmt_tw(tw, step_min):
     eh, em = divmod(end_min, 60)
     return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
 
-# ---------------------------- Day-ahead outlook (matching layer) ----------------------------
+# ---------------------------- Day-ahead outlook (Advisory) ----------------------------
 st.markdown("### Day-ahead outlook (00:00–24:00)")
-st.caption("Expected demand vs expected solar for the next planning day. Advisory only — uncertainty applies.")
+st.markdown('**Advisory** — Expected demand vs expected solar for the next planning day. NASA POWER–based; uncertainty applies.')
 if matching:
     step_min = _m(matching, "timestep_minutes", DT_MINUTES_DEFAULT)
     risk_val = _m(matching, "risk_level", "")
     risk_matching = str(risk_val).lower()
     risk_cls = {"low": "low", "medium": "med", "high": "high"}.get(risk_matching, "")
-    st.markdown(f'<div class="card"><p class="kpi">{_m(matching, "daily_outlook_text", "")}</p></div>', unsafe_allow_html=True)
+
+    # 1) Chart: Expected solar (PV power kW) over 24h at 15-min from NASA POWER–derived run
+    steps_24h = int(24 * 60 / DT_MINUTES_DEFAULT)
+    df_day = df.head(steps_24h)
+    pv_kw_24h = df_day["pv_now_kw"].to_numpy(dtype=float)
+    ts_24h = pd.to_datetime(df_day["ts"])
+    fig_solar = go.Figure()
+    fig_solar.add_trace(go.Scatter(x=ts_24h, y=pv_kw_24h, mode="lines", line_shape="spline", name="Expected PV power (kW)", line=dict(color="#0ea5e9")))
+    fig_solar.update_layout(title="Expected solar (PV power) over next 24h — NASA POWER", height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="kW")
+    st.plotly_chart(fig_solar, use_container_width=True)
+
+    # 2) Summary: total expected solar, planned demand
+    st.markdown("#### Summary (24h)")
     mcol1, mcol2, mcol3, mcol4 = st.columns(4)
     with mcol1:
         st.metric("Expected solar (24h)", f"{float(_m(matching, 'total_solar_kwh', 0)):.2f} kWh")
@@ -433,6 +471,19 @@ if matching:
         st.metric("Energy margin", margin_label)
     with mcol4:
         st.markdown(f'<span class="pill {risk_cls}">Risk: {str(risk_val).title()}</span>', unsafe_allow_html=True)
+
+    # 3) Comparative metrics and advisory text
+    st.markdown(f'<div class="card"><p class="kpi">{_m(matching, "daily_outlook_text", "")}</p></div>', unsafe_allow_html=True)
+
+    # 4) Colourful bar chart: surplus (green) vs deficit (red) by 15-min — verifiable from data
+    load_kw_day = df_day["load_requested_kw"].to_numpy(dtype=float)
+    surplus_flag = pv_kw_24h >= load_kw_day
+    colors = ["#22c55e" if s else "#ef4444" for s in surplus_flag]
+    fig_bars = go.Figure(go.Bar(x=ts_24h, y=[1 if s else -1 for s in surplus_flag], marker_color=colors, name="Surplus (green) / Deficit (red)"))
+    fig_bars.update_layout(title="Surplus vs deficit by 15-min (green = solar ≥ demand, red = demand > solar)", height=220, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="", yaxis=dict(tickvals=[-1, 1], ticktext=["Deficit", "Surplus"]))
+    st.plotly_chart(fig_bars, use_container_width=True)
+
+    # 5) Surplus/deficit windows list — matches bar chart; note on critical load and inverter
     with st.expander("Surplus and deficit windows (solar ≥ demand vs demand > solar)"):
         sur = _m(matching, "surplus_windows") or []
         def_ = _m(matching, "deficit_windows") or []
@@ -444,20 +495,14 @@ if matching:
             st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw, step_min) for tw in def_))
         else:
             st.caption("No deficit windows.")
+        st.caption("The bar chart above shows the same: green = surplus, red = deficit. During deficit, critical load may be at risk if inverter or supply is low; prioritise essentials.")
     if not _m(matching, "critical_fully_protected", True):
         st.warning("Critical loads are not fully protected in all timesteps. Prioritise essentials only.")
 else:
     st.caption("Run the digital twin to see day-ahead matching.")
 
-# Weather snapshot
-weather = None
-if client:
-    try:
-        weather = client.current_weather(float(st.session_state["latitude"]), float(st.session_state["longitude"]))
-    except Exception:
-        weather = None
-
-# KPI summary cards (state CSV columns: kpi_CLSR, kpi_Blackout_minutes, kpi_SAR, kpi_Battery_throughput_kwh)
+# KPI summary cards (state CSV: cumulative at current replay step — real, from day-ahead simulation)
+st.caption("From day-ahead simulation at current replay step. Values are cumulative over the run and update when you run the twin again.")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown('<div class="card"><div class="muted">Critical power reliability</div>'
@@ -498,24 +543,9 @@ with pcols[2]:
     st.metric("Total selected load", f"{total_selected_kw:.2f} kW")
 st.caption("Power available = PV at this timestep + inverter capacity from battery (when SOC > reserve). Compare with total load from the distribution board.")
 
-# Weather card
-st.markdown("### Current Weather")
-wcols = st.columns([2, 2, 2, 2, 2])
-if weather:
-    icon_url = weather_icon_url(weather.get("icon",""))
-    wcols[0].markdown(f"**Status**  \n{weather.get('description','').title()}")
-    if icon_url:
-        wcols[0].image(icon_url, width=72)
-    wcols[1].metric("Temperature (°C)", f"{weather.get('temperature_c',0):.1f}")
-    wcols[2].metric("Humidity (%)", f"{weather.get('humidity_pct',0):.0f}")
-    wcols[3].metric("Cloud cover (%)", f"{weather.get('cloud_cover_pct',0):.0f}")
-    wcols[4].metric("Wind (m/s)", f"{weather.get('wind_speed_mps',0):.1f}")
-else:
-    st.caption("Weather card requires OpenWeather key. The twin still runs with synthetic PV if needed.")
-
-# Guidance display (align by step index; guidance JSONL has same row count as state CSV)
+# Recommendation (for current replay step; regenerated when you run the twin again)
 st.markdown("### Recommendation")
-st.caption("Day-ahead risk (above) summarizes the full planning day; the risk below is for the current replay step.")
+st.caption("For the current replay step. Based on the day-ahead run; regenerated when you run the digital twin again.")
 gdf = pd.read_json(guidance_jsonl, lines=True)
 if "timestamp" in gdf.columns:
     gdf["ts"] = pd.to_datetime(gdf["timestamp"], utc=True)
@@ -544,18 +574,8 @@ with gcol2:
                 f'<div class="kpi">{soc_pct:.0f}% SOC · {battery_state_label}</div>'
                 '<div class="muted">Reserve protected automatically (advisory only)</div></div>', unsafe_allow_html=True)
 
-# Solar forecast chart: next 24h (first planning day) — power profile + cumulative energy
-st.markdown("### Solar forecast: next 24h (first planning day)")
-st.caption("Expected solar for the next day (00:00–24:00) from NASA POWER (GHI). Power profile and cumulative energy — forecast, not certainty.")
-steps_24h = int(24 * 60 / DT_MINUTES_DEFAULT)
-df_first_day = df.head(steps_24h)
-pv_kw_24h = df_first_day["pv_now_kw"].to_numpy(dtype=float)
-ts_24h = pd.to_datetime(df_first_day["ts"])
-fig_24h = plot_power_and_energy(ts_24h, pv_kw_24h, DT_MINUTES_DEFAULT)
-st.plotly_chart(fig_24h, width="stretch")
-
-# Optional: 24h or 48h from replay point
-st.markdown("#### Forecast from replay point (24h or 48h)")
+# Forecast from replay point (24h or 48h) — for exploring the timeline
+st.markdown("### Solar forecast from replay point (24h or 48h)")
 horizon_hours = st.radio("Forecast window", [24, 48], horizontal=True, key="forecast_horizon")
 steps = int(horizon_hours * 60 / DT_MINUTES_DEFAULT)
 i0 = step
@@ -575,9 +595,9 @@ fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_now_kw"], mode="lines", name="S
 fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
 st.plotly_chart(fig2, width="stretch")
 
-# Appliance advisory: from day-ahead matching (surplus/deficit windows + priority)
+# Appliance advisory (day-ahead) — grouped by category; live from matching
 st.markdown("### Appliance advisory (day-ahead)")
-st.caption("Derived from surplus/deficit windows and load priority — traceable to matching, not opaque AI. Advisory only.")
+st.caption("From day-ahead matching (surplus/deficit + priority). Grouped by category. Advisory only — no automatic control.")
 selected_appliances = st.session_state.get("selected_appliances", [])
 qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
@@ -610,12 +630,11 @@ if matching and adv_list:
             note = "No matching advisory."
         records.append({
             "Appliance": f"{a.name} (x{q})",
-            "Category": category_badge(a.category),
+            "Category": a.category,
             "Power": f"{kw:.2f} kW",
             "Status": status_display,
             "Why": note,
         })
-    adv = pd.DataFrame(records)
     def _style_advisory(v: str):
         if v == "Avoid today":
             return "background-color: rgba(239,68,68,0.12)"
@@ -624,7 +643,14 @@ if matching and adv_list:
         if v == "Run in recommended window":
             return "background-color: rgba(234,179,8,0.12)"
         return ""
-    st.dataframe(adv.style.applymap(_style_advisory, subset=["Status"]), width="stretch", hide_index=True)
+    # Group by category: Critical, Flexible, Deferrable
+    for cat_label, cat_key in [("Critical", "critical"), ("Flexible", "flexible"), ("Deferrable", "deferrable")]:
+        subset = [r for r in records if r["Category"] == cat_key]
+        if not subset:
+            continue
+        st.markdown(f"**{cat_label}**")
+        df_sub = pd.DataFrame(subset)[["Appliance", "Power", "Status", "Why"]]
+        st.dataframe(df_sub.style.applymap(_style_advisory, subset=["Status"]), use_container_width=True, hide_index=True)
 else:
     st.caption("Run the digital twin to see appliance advisories from day-ahead matching.")
 
@@ -691,7 +717,7 @@ system_summary_for_pdf = {
     "Inverter limit": f"{float(st.session_state.get('inv_kw', 0)):.1f} kW",
     "Solar source": "NASA POWER (day-ahead GHI)",
 }
-weather_summary = weather if weather else {}
+weather_summary = st.session_state.get("current_weather") or {}
 # Pass matching as dict so PDF builder gets a serializable format (avoids TypeError on Cloud/serialization)
 raw_matching = res.get("matching_first_day")
 matching_for_pdf = None
