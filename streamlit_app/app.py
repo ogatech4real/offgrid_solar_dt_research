@@ -42,6 +42,9 @@ def _inject_css() -> None:
           .pill.low {background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35);}
           .pill.med {background: rgba(234,179,8,0.14); border-color: rgba(234,179,8,0.35);}
           .pill.high {background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35);}
+          .load-board {border: 1px solid rgba(49, 51, 63, 0.25); border-radius: 12px; padding: 12px 16px; margin: 8px 0;}
+          .load-circuit {display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(49,51,63,0.1);}
+          .load-total {font-size: 1.1rem; font-weight: 700; margin-top: 8px;}
         </style>
         """,
         unsafe_allow_html=True,
@@ -57,23 +60,27 @@ def _risk_pill(risk: str) -> str:
 # ---------------------------- Appliance catalog ----------------------------
 
 def appliance_catalog() -> list[Appliance]:
-    # Typical appliances + publishable defaults; user can quantity-adjust.
+    # Typical appliances + EV + others; watt ratings shown on load board; user toggles and quantity.
     return [
+        # Critical (always-on / essentials)
         Appliance(id="light", name="Lighting", category="critical", power_w=60, duration_steps=1),
         Appliance(id="fan", name="Ceiling Fan", category="critical", power_w=70, duration_steps=1),
         Appliance(id="fridge", name="Refrigerator", category="critical", power_w=150, duration_steps=1),
         Appliance(id="phone", name="Phone Charging", category="critical", power_w=15, duration_steps=1),
         Appliance(id="router", name="Wi‑Fi Router", category="critical", power_w=12, duration_steps=1),
-
+        # Flexible
         Appliance(id="tv", name="Television", category="flexible", power_w=120, duration_steps=4, earliest_start_step=60, latest_end_step=92),
         Appliance(id="laptop", name="Laptop", category="flexible", power_w=65, duration_steps=4, earliest_start_step=20, latest_end_step=92),
-
-        Appliance(id="washing", name="Washing Machine (cycle)", category="deferrable", power_w=500, duration_steps=8, earliest_start_step=32, latest_end_step=80, daily_quota_steps=8),
-        Appliance(id="iron", name="Ironing", category="deferrable", power_w=1000, duration_steps=4, earliest_start_step=36, latest_end_step=84, daily_quota_steps=4),
-        Appliance(id="pump", name="Water Pump", category="deferrable", power_w=750, duration_steps=4, earliest_start_step=28, latest_end_step=88, daily_quota_steps=4),
-
         Appliance(id="microwave", name="Microwave", category="flexible", power_w=1200, duration_steps=1, earliest_start_step=20, latest_end_step=92),
         Appliance(id="ac", name="Small Air Conditioner", category="flexible", power_w=1200, duration_steps=8, earliest_start_step=56, latest_end_step=92),
+        # Deferrable
+        Appliance(id="washing", name="Washing Machine", category="deferrable", power_w=500, duration_steps=8, earliest_start_step=32, latest_end_step=80, daily_quota_steps=8),
+        Appliance(id="iron", name="Ironing", category="deferrable", power_w=1000, duration_steps=4, earliest_start_step=36, latest_end_step=84, daily_quota_steps=4),
+        Appliance(id="pump", name="Water Pump", category="deferrable", power_w=750, duration_steps=4, earliest_start_step=28, latest_end_step=88, daily_quota_steps=4),
+        # EV (deferrable, high load)
+        Appliance(id="ev", name="Electric Vehicle (AC charge)", category="deferrable", power_w=3500, duration_steps=16, earliest_start_step=24, latest_end_step=84, daily_quota_steps=16),
+        # Others (catch-all flexible)
+        Appliance(id="others", name="Others (misc loads)", category="flexible", power_w=500, duration_steps=4, earliest_start_step=20, latest_end_step=92),
     ]
 
 def category_badge(cat: str) -> str:
@@ -186,27 +193,6 @@ with st.sidebar:
     st.session_state["bat_kwh"] = bat_kwh
     st.session_state["inv_kw"] = inv_kw
 
-    # Appliance selection (dynamic dropdown + quantity)
-    st.subheader("Appliance Control")
-    catalog = appliance_catalog()
-    name_to_obj = {a.name: a for a in catalog}
-
-    default_selected = st.session_state.get("selected_appliances", [a.name for a in catalog if a.category == "critical"])
-    selected_names = st.multiselect("Select appliances in your home", options=list(name_to_obj.keys()), default=default_selected)
-    st.session_state["selected_appliances"] = selected_names
-
-    qty_map = st.session_state.get("qty_map", {})
-    # show quantity inputs for selected
-    for n in selected_names:
-        a = name_to_obj[n]
-        cols = st.columns([6, 2, 2])
-        cols[0].write(f"**{a.name}** · {category_badge(a.category)} · {int(a.power_w)} W")
-        qty = cols[1].number_input("Qty", min_value=1, max_value=10, value=int(qty_map.get(a.id, 1)), key=f"qty_{a.id}")
-        qty_map[a.id] = qty
-        # quick indicator column
-        cols[2].write("")
-    st.session_state["qty_map"] = qty_map
-
     # Run modes
     st.subheader("Run Mode")
     auto_enabled = st.toggle("Auto-run every 15 minutes", value=auto_enabled)
@@ -230,6 +216,50 @@ with st.sidebar:
         st.session_state["location_name"] = st.session_state.get("location_name", "London, GB")
         run_btn = True
         st.session_state["sim_days"] = 2
+
+# ---------------------------- Main: Load (distribution board) ----------------------------
+st.markdown("### Load — distribution board")
+st.caption("Switch loads on/off as if they were circuits on a distribution board. Total load updates from your selection. Advisory only — no physical switching.")
+catalog = appliance_catalog()
+# Initialize toggle state: critical ON by default, rest OFF
+for a in catalog:
+    if f"load_on_{a.id}" not in st.session_state:
+        st.session_state[f"load_on_{a.id}"] = a.category == "critical"
+    if f"qty_{a.id}" not in st.session_state:
+        st.session_state[f"qty_{a.id}"] = 1
+
+total_load_w = 0.0
+selected_names = []
+qty_map = {}
+
+# Build in two rows: Critical | Flexible | Deferrable | EV/Others
+for cat_label, cat_key in [("Critical", "critical"), ("Flexible", "flexible"), ("Deferrable", "deferrable")]:
+    items = [a for a in catalog if a.category == cat_key]
+    if not items:
+        continue
+    with st.expander(f"{cat_label} loads", expanded=(cat_key == "critical")):
+        for a in items:
+            cols = st.columns([1, 2, 1, 1])
+            with cols[0]:
+                on = st.toggle("ON", value=st.session_state.get(f"load_on_{a.id}", a.category == "critical"), key=f"load_on_{a.id}", label_visibility="collapsed")
+            with cols[1]:
+                st.markdown(f"**{a.name}** — {int(a.power_w):,} W")
+            with cols[2]:
+                qty = st.number_input("Qty", min_value=1, max_value=10, value=int(st.session_state.get(f"qty_{a.id}", 1)), key=f"qty_{a.id}", label_visibility="collapsed")
+            with cols[3]:
+                if on:
+                    circuit_w = float(a.power_w) * qty
+                    total_load_w += circuit_w
+                    selected_names.append(a.name)
+                    qty_map[a.id] = qty
+                    st.metric("", f"{circuit_w/1000:.2f} kW")
+                else:
+                    st.caption("—")
+
+total_load_kw = total_load_w / 1000.0
+st.markdown(f'<div class="load-board"><span class="load-total">Total load (selected): **{total_load_kw:.2f} kW**</span></div>', unsafe_allow_html=True)
+st.session_state["selected_appliances"] = selected_names
+st.session_state["qty_map"] = qty_map
 
 # Auto-run trigger on autorefresh
 if st.session_state.get("auto_enabled", False) and not run_btn:
@@ -338,6 +368,28 @@ with col4:
     st.markdown('<div class="card"><div class="muted">Battery wear proxy</div>'
                 f'<div class="kpi">{float(row.get("kpi_Battery_throughput_kwh", 0)):.2f} kWh</div>'
                 '<div class="muted">Total charge/discharge throughput</div></div>', unsafe_allow_html=True)
+
+# Instantaneous power available on inverter vs total selected load
+pv_now_kw = float(row.get("pv_now_kw", 0.0))
+soc_now = float(row.get("soc_now", 0.0))
+soc_min = float(row.get("soc_min", 0.25))
+inv_kw = float(st.session_state.get("inv_kw", 2.5))
+battery_available_kw = inv_kw if soc_now > soc_min else 0.0
+power_available_kw = pv_now_kw + battery_available_kw
+total_selected_kw = sum(
+    float(a.power_w) * int(st.session_state.get(f"qty_{a.id}", 1))
+    for a in appliance_catalog()
+    if st.session_state.get(f"load_on_{a.id}", False)
+) / 1000.0
+st.markdown("#### Power available (inverter) vs load")
+pcols = st.columns(3)
+with pcols[0]:
+    st.metric("PV now (kW)", f"{pv_now_kw:.2f}")
+with pcols[1]:
+    st.metric("Power available (PV + battery)", f"{power_available_kw:.2f} kW")
+with pcols[2]:
+    st.metric("Total selected load", f"{total_selected_kw:.2f} kW")
+st.caption("Power available = PV at this timestep + inverter capacity from battery (when SOC > reserve). Compare with total load from the distribution board.")
 
 # Weather card
 st.markdown("### Current Weather")
