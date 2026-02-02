@@ -1,39 +1,18 @@
-# Off-grid Solar-First Digital Twin (DT) + Explainable Decision Support
+# Off-Grid Solar Energy Planner
 
-This repository implements a **solar-first, grid-independent household energy decision-support system** designed for emerging-economy operating conditions (weak/absent grid). It combines:
-
-1) a **modular digital twin** (PV generation, battery SOC, household loads, and control loop),
-2) a **forecast-informed controller** (survivability-first scheduling),
-3) an **explainable advisory layer** (deterministic reason codes + optional LLM refinement), and
-4) a **Streamlit dashboard** that communicates recommended actions with replay, scheduling visuals, and PDF handouts for user studies and peer review.
-
-The project is intentionally structured to serve **both academic** evaluation (reproducible experiments, KPIs, ablation-ready logs) and **industry** prototyping (clear data contracts, security hygiene, deployment pathway toward HIL/IoT control).
+An **advisory digital twin** for **day-ahead household energy planning** in off-grid or weak-grid settings. It uses **NASA POWER** solar data, simulates PV–battery–load over 15‑minute steps, and delivers clear day-ahead outlook, statement-list advice, and downloadable plans (CSV, JSONL, PDF).
 
 ---
 
-## What you get (production-grade prototype)
+## What you get
 
-### Digital Twin engine (backend)
-- Time-stepped simulation (default **15 min**) with PV, battery, and task-based loads.
-- Pluggable controllers:
-  - `naive` (no intelligence)
-  - `rule_based` (simple inverter-like logic)
-  - `static_priority` (priorities + SOC thresholds)
-  - `forecast_heuristic` (forecast-informed survivability-first scheduling)
-- Continuous logging to:
-  - `*_state.csv` (state + decisions + metrics per timestep)
-  - `*_guidance.jsonl` (headline, explanation, reason codes, dominant factors)
+- **Day-ahead planning (00:00–24:00)** — Expected solar vs your selected load; surplus/deficit windows; risk and capability statements.
+- **NASA POWER solar** — Physics-based GHI for reproducibility; OpenWeather only for location and current weather.
+- **Streamlit dashboard** — Warm UI, replay over time, KPIs, recommendation per step, appliance advice as a **statement list** (not per-appliance “avoid today” table).
+- **Pluggable controllers** — `naive`, `rule_based`, `static_priority`, **`forecast_heuristic`** (default).
+- **Logs and PDF** — State CSV, guidance JSONL, and a two-day PDF plan for handouts and review.
 
-### Streamlit advisory interface (frontend)
-- **Sidebar system configuration** including location (OpenWeather geocoding), PV/battery/inverter, and reserve settings.
-- **Dynamic appliance selection** (multiselect + quantities) with optional per-appliance overrides.
-- **Scenario replay**: time scrubber to review any timestep and see decisions + explanations update.
-- **Schedule timeline heatmap** for recommended task execution windows.
-- **Downloadable PDF plan** for **Today + Tomorrow** (48h rolling-horizon view), suitable for reviewer appendices and user-study handouts.
-- Explainability-first presentation:
-  - risk indicator (low/medium/high)
-  - reason codes + dominant factors
-  - appliance advisory (green/amber/red)
+**Advisory only** — no automatic switching; user stays in control. Suitable for **academic** evaluation (KPIs, ablation, reproducible solar) and **industry** prototyping (clear contracts, path to HIL/live telemetry).
 
 ---
 
@@ -41,174 +20,117 @@ The project is intentionally structured to serve **both academic** evaluation (r
 
 ```
 offgrid_solar_dt/
-  streamlit_app/                 # UI layer (imports engine from src/)
-    app.py
-  src/offgrid_dt/                # Engine layer
-    dt/                          # Simulator + physical models
-      simulator.py
-      battery.py
-      load.py
-    forecast/                     # Forecast acquisition + PV conversion
-      openweather.py
-      pv_power.py
-    control/                      # Controllers (baselines + forecast heuristic)
-      controllers.py
-    xai/                          # Deterministic explanations + optional LLM refinement
-      explain.py
-    metrics/                      # KPI computation
-      kpis.py
-    io/                           # Schemas, logging, PDF report generation
-      schema.py
-      logger.py
-      pdf_report.py
+  streamlit_app/
+    app.py                    # Streamlit UI (adds src/ to path, runs simulate + matching)
+  src/offgrid_dt/
+    dt/                       # Simulator + physical models
+      simulator.py            # Time-stepped run; NASA POWER PV; matching_first_day
+      battery.py, load.py
+    forecast/
+      nasa_power.py           # NASA POWER GHI for next planning day(s)
+      openweather.py         # Geocoding + current weather only
+      pv_power.py            # Irradiance → PV power
+    control/
+      controllers.py         # naive, rule_based, static_priority, forecast_heuristic
+    matching/
+      day_ahead.py            # compute_day_ahead_matching, format_day_ahead_statements
+    xai/
+      explain.py             # Deterministic guidance + optional OpenAI rewrite
+    metrics/
+      kpis.py                # CLSR, blackout, SAR, battery throughput
+    io/
+      schema.py, logger.py, pdf_report.py
   scripts/
-    run_simulation.py             # CLI batch runner (writes logs)
+    run_simulation.py        # CLI batch run (all controllers, writes logs)
+  tests/
+    test_*.py                # Battery, forecast resolution, NASA parse, simulation smoke
+  docs/                      # Full project documentation (see below)
   .streamlit/
-    config.toml
-    secrets.template.toml         # NEVER commit real secrets
-  requirements.txt
-  pyproject.toml
+    config.toml              # Theme (warm colours); secrets.template.toml
+  requirements.txt, pyproject.toml
 ```
 
-**Security boundary:** the engine lives under `src/offgrid_dt/`. The UI is a consumer that calls engine functions and reads log outputs. Secrets are only accessed via Streamlit secrets and are not written to logs.
-
-**Interface–manuscript alignment:** For UI/UX work, advisory framing, and what the interface must (and must not) do, see [docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md](docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md). This document is the single source of truth for interface development and handover.
+**Security:** Engine under `src/offgrid_dt/`; secrets via Streamlit secrets only; no secrets in logs.
 
 ---
 
-## Quick start (local)
+## Quick start
 
-### 1) Install
+### 1. Install
+
 ```bash
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-
+# Windows: .venv\Scripts\activate
+# Unix:    source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2) Configure secrets (optional but recommended)
-Copy the template and fill keys:
-```bash
-cp .streamlit/secrets.template.toml .streamlit/secrets.toml
-```
+### 2. Secrets (optional)
 
-In `secrets.toml`:
-- `openweather_api_key` enables geocoding + forecast calls.
-- `openai_api_key` enables LLM-enhanced explanation rewriting (deterministic XAI remains the source of truth).
- - `openai_model` (optional) defaults to `gpt-4o-mini`.
+Copy `.streamlit/secrets.template.toml` to `.streamlit/secrets.toml`:
 
-### 3) Run the app
+- `openweather_api_key` — geocoding and current weather.
+- `openai_api_key` (optional) — clearer explanation wording; decisions stay deterministic.
+
+### 3. Run the app
+
 ```bash
 streamlit run streamlit_app/app.py
 ```
 
----
+Use **Run my plan** or **Try a quick demo (2 days)** to see the day-ahead outlook and statement-list advice.
 
-## Streamlit Community Cloud deployment
+### 4. CLI batch (reproducible runs)
 
-1) Push this repo to GitHub.
-2) Deploy on Streamlit Cloud.
-3) Add secrets in the Streamlit UI:
-   - `openweather_api_key = "..."`
-   - `openai_api_key = "..."` (optional)
+From repo root, set `PYTHONPATH` so `src` is importable, then run:
 
----
+- **Windows PowerShell:** `$env:PYTHONPATH = "src"; python scripts/run_simulation.py --days 2 --out logs`
+- **Unix / Bash:** `export PYTHONPATH=src && python scripts/run_simulation.py --days 2 --out logs`
 
-## Reproducible experiments (CLI)
-
-Run a multi-controller batch simulation and write logs:
-```bash
-python scripts/run_simulation.py --days 7 --out logs
-```
-
-Outputs are written to:
-```
-logs/
-  run_naive/
-    naive_7d_state.csv
-    naive_7d_guidance.jsonl
-  run_forecast_heuristic/
-    forecast_heuristic_7d_state.csv
-    forecast_heuristic_7d_guidance.jsonl
-  ...
-```
-
-These logs are directly reusable for:
-- paper figures
-- KPI tables
-- scenario playback in the UI
-- user-study stimuli
+Outputs: `logs/run_<controller>/<controller>_2d_state.csv`, `*_guidance.jsonl`, and matching in the returned dict.
 
 ---
 
-## KPIs (maps cleanly to the manuscript)
-
-The engine computes the following (per timestep and aggregated):
-- **Critical Load Supply Ratio (CLSR)**
-- **Blackout duration** (minutes/hours for critical load shortfall)
-- **Solar Autonomy Ratio (SAR)**
-- **Solar utilization** (curtailment proxy)
-- **Battery throughput / cycling proxy** (ageing proxy)
-- **Flexible task satisfaction** (comfort proxy)
-
-The intent is survivability-first operation:
-**critical loads dominate**, then solar utilization, then battery protection.
-
----
-
-## Forecasting approach (pragmatic, review-safe)
-
-The system supports OpenWeather-driven inputs when keys and product access are available. Where API limits or endpoint availability constrain solar forecasting, the engine falls back to a **synthetic irradiance template** so:
-- the demo remains fully runnable,
-- experiments stay reproducible,
-- the controller behaviour remains testable.
-
-For publication, clearly label the forecast source used in each run (OpenWeather vs template) and report sensitivity when appropriate.
-
----
-
-## Explainability model (deterministic-first + optional OpenAI enhancement)
-
-### Deterministic XAI (always on)
-The controller emits:
-- `risk_level` (low/medium/high)
-- `reason_codes` (e.g., `LOW_SOC`, `PV_SURPLUS_WINDOW`, `PROTECT_RESERVE`)
-- `dominant_factors` (SOC, PV outlook, reserve thresholds)
-
-### Optional OpenAI enhancement (stylistic refinement)
-If an `openai_api_key` is provided, the app can **rewrite** the deterministic explanation into clearer language. This does **not** change decisions and should be treated as a communication layer only.
-
----
-
-## How this supports HIL / industry deployment
-
-This prototype is **advisory** by default (user-in-the-loop). A realistic deployment pathway is:
-1) Keep the decision engine identical.
-2) Replace or augment the simulator with live telemetry (SOC, PV power, load sensing).
-3) Add an actuator interface (smart plugs/relays/inverter API) gated by safety rules.
-
-Because the UI and engine are separated and communicate via a stable data contract (state logs / structured records), moving from replay to live mode is an incremental engineering step.
-
----
-
-## Integrity checks (what to run if you change code)
+## Integrity checks
 
 ```bash
 python -m compileall -q src
+# Set PYTHONPATH first (Windows: $env:PYTHONPATH = "src"; Unix: export PYTHONPATH=src)
+python -m pytest tests -q
 python scripts/run_simulation.py --days 2 --out logs_smoke
-pytest -q
 ```
 
 ---
 
-## Limitations (be explicit in the manuscript)
+## Documentation
 
-- Forecast accuracy depends on endpoint availability and local microclimate; the template fallback is for reproducibility.
-- Battery ageing is represented as a throughput/cycling proxy in this prototype.
-- Loads are represented as **task-based** abstractions (suitable for scheduling; not appliance transient physics).
+| Document | Purpose |
+|---------|--------|
+| [docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md) | **Full project reference** — architecture, modules, data flow, config, UI, matching, PDF, tests, deployment, upgrade. |
+| [docs/APP_PURPOSE_AND_ACHIEVEMENTS.md](docs/APP_PURPOSE_AND_ACHIEVEMENTS.md) | What the app does and achieves (industry & academic). |
+| [docs/CODEBASE_AUDIT_DATA_SOURCES.md](docs/CODEBASE_AUDIT_DATA_SOURCES.md) | Trace of every UI display to its data source (no orphan displays). |
+| [docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md](docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md) | Interface intent and handover rules. |
+| [docs/OVERHAUL_ALIGNMENT_AUDIT.md](docs/OVERHAUL_ALIGNMENT_AUDIT.md) | Post–NASA POWER and matching feature alignment. |
+
+---
+
+## KPIs
+
+- **Critical Load Supply Ratio (CLSR)** — How consistently essentials are powered.
+- **Blackout time** — Minutes of unserved critical load.
+- **Solar Autonomy Ratio (SAR)** — Share of demand met by solar.
+- **Battery throughput** — Charge/discharge (wear proxy).
+
+---
+
+## Limitations
+
+- Solar from NASA POWER (or synthetic fallback if API unavailable); accuracy depends on location and conditions.
+- Battery ageing is a throughput proxy only.
+- Loads are task-based (scheduling); not full appliance transient physics.
 
 ---
 
 ## License
 
-MIT (adjust if your institution requires a different license).
+MIT (adjust if your institution requires).
