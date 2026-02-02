@@ -22,7 +22,7 @@ from offgrid_dt.dt.simulator import simulate
 from offgrid_dt.forecast.openweather import OpenWeatherSolarClient
 from offgrid_dt.io.schema import Appliance, SystemConfig
 from offgrid_dt.io.pdf_report import build_two_day_plan_pdf_from_logs
-from offgrid_dt.matching import compute_day_ahead_matching
+from offgrid_dt.matching import compute_day_ahead_matching, format_day_ahead_statements
 
 st.set_page_config(page_title="Off-Grid Solar Energy Planner", layout="wide")
 
@@ -662,62 +662,23 @@ fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_now_kw"], mode="lines", name="S
 fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
 st.plotly_chart(fig2, width="stretch")
 
-# Appliance advisory (day-ahead) — grouped by category; live from matching
+# Appliance advice (day-ahead) — statement list, not per-appliance table
 st.markdown("### Appliance advice for tomorrow")
-st.caption("When to run each load based on surplus and deficit — grouped by type. This is advice only; you stay in control.")
+st.caption("Day-ahead outlook: load vs solar. This is advice only; you stay in control.")
 selected_appliances = st.session_state.get("selected_appliances", [])
-qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
+has_flexible_or_deferrable = any(
+    catalog.get(n) and catalog[n].category in ("flexible", "deferrable")
+    for n in selected_appliances
+) if selected_appliances else False
 
-adv_list = _m(matching, "appliance_advisories") or [] if matching else []
-if matching and adv_list:
-    adv_by_name = {}
-    for adv in adv_list:
-        n = adv.get("name", "") if isinstance(adv, dict) else getattr(adv, "name", "")
-        if n:
-            adv_by_name[n] = adv
-    records = []
-    for name in selected_appliances:
-        a = catalog.get(name)
-        if not a:
-            continue
-        q = int(qty_map.get(a.id, 1))
-        kw = (float(a.power_w) * q) / 1000.0
-        adv = adv_by_name.get(a.name)
-        if adv:
-            status_raw = adv.get("status", "") if isinstance(adv, dict) else getattr(adv, "status", "")
-            status_display = {"safe_to_run": "Safe to run", "run_only_in_recommended_window": "Run in recommended window", "avoid_today": "Avoid today"}.get(status_raw, status_raw)
-            reason = adv.get("reason", "") if isinstance(adv, dict) else getattr(adv, "reason", "")
-            rec_win = adv.get("recommended_window") if isinstance(adv, dict) else getattr(adv, "recommended_window", None)
-            note = reason
-            if rec_win:
-                note = f"{reason} Window: {rec_win}."
-        else:
-            status_display = "—"
-            note = "No matching advisory."
-        records.append({
-            "Appliance": f"{a.name} (x{q})",
-            "Category": a.category,
-            "Power": f"{kw:.2f} kW",
-            "Status": status_display,
-            "Why": note,
-        })
-    def _style_advisory(v: str):
-        if v == "Avoid today":
-            return "background-color: rgba(239,68,68,0.12)"
-        if v == "Safe to run":
-            return "background-color: rgba(34,197,94,0.12)"
-        if v == "Run in recommended window":
-            return "background-color: rgba(234,179,8,0.12)"
-        return ""
-    # Group by category: Critical, Flexible, Deferrable
-    for cat_label, cat_key in [("Critical", "critical"), ("Flexible", "flexible"), ("Deferrable", "deferrable")]:
-        subset = [r for r in records if r["Category"] == cat_key]
-        if not subset:
-            continue
-        st.markdown(f"**{cat_label}**")
-        df_sub = pd.DataFrame(subset)[["Appliance", "Power", "Status", "Why"]]
-        st.dataframe(df_sub.style.applymap(_style_advisory, subset=["Status"]), use_container_width=True, hide_index=True)
+if matching:
+    statements = format_day_ahead_statements(matching, has_flexible_or_deferrable=has_flexible_or_deferrable, timestep_minutes=DT_MINUTES_DEFAULT)
+    if statements:
+        for s in statements:
+            st.markdown(f"- {s}")
+    else:
+        st.caption("No day-ahead statements (run your plan to see advice).")
 else:
     st.caption("Run your plan to see appliance advice from your day-ahead outlook.")
 

@@ -138,10 +138,16 @@ def _merge_adjacent_windows(step_flags: List[bool], timestamps: List[datetime]) 
     return windows
 
 
-def _format_window_times(tw: TimeWindow, timestep_minutes: int) -> str:
-    """Format time window as HH:MM–HH:MM."""
-    start_min = tw.start_step * timestep_minutes
-    end_min = (tw.end_step + 1) * timestep_minutes
+def _format_window_times(tw: TimeWindow | Dict[str, Any], timestep_minutes: int) -> str:
+    """Format time window as HH:MM–HH:MM (accepts TimeWindow or dict from to_dict())."""
+    if isinstance(tw, dict):
+        start_step = int(tw.get("start_step", 0))
+        end_step = int(tw.get("end_step", 0))
+    else:
+        start_step = tw.start_step
+        end_step = tw.end_step
+    start_min = start_step * timestep_minutes
+    end_min = (end_step + 1) * timestep_minutes
     sh, sm = divmod(start_min, 60)
     eh, em = divmod(end_min, 60)
     return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
@@ -263,6 +269,87 @@ def compute_day_ahead_matching(
         timestep_minutes=timestep_minutes,
         steps_per_day=steps_per_day,
     )
+
+
+def format_day_ahead_statements(
+    matching: Any,
+    has_flexible_or_deferrable: Optional[bool] = None,
+    timestep_minutes: int = 15,
+) -> List[str]:
+    """Build a clear statement list for day-ahead advice (no per-appliance 'avoid today' table).
+
+    Statements are logical and robust:
+    - Total load demand and total solar forecast for tomorrow
+    - Whether the system can sustain the selected load if run tomorrow
+    - If deficit: advise not to run flexible/deferrable or reduce their hours
+    - Critical load coverage and surplus/deficit window summary
+
+    matching: dict or DayAheadMatchingResult from compute_day_ahead_matching.
+    has_flexible_or_deferrable: if None, inferred from appliance_advisories categories.
+    """
+    def _get(m: Any, key: str, default: Any = None) -> Any:
+        if m is None:
+            return default
+        return m.get(key, default) if isinstance(m, dict) else getattr(m, key, default)
+
+    if matching is None:
+        return []
+
+    total_demand_kwh = float(_get(matching, "total_demand_kwh", 0) or 0)
+    total_solar_kwh = float(_get(matching, "total_solar_kwh", 0) or 0)
+    energy_margin_kwh = float(_get(matching, "energy_margin_kwh", 0) or 0)
+    energy_margin_type = str(_get(matching, "energy_margin_type", "tight") or "tight")
+    critical_fully_protected = bool(_get(matching, "critical_fully_protected", True))
+    surplus_windows = _get(matching, "surplus_windows") or []
+    deficit_windows = _get(matching, "deficit_windows") or []
+
+    if has_flexible_or_deferrable is None:
+        advs = _get(matching, "appliance_advisories") or []
+        has_flexible_or_deferrable = any(
+            str(_get(a, "category", "") or "").lower() in ("flexible", "deferrable")
+            for a in advs
+        )
+
+    statements: List[str] = []
+
+    statements.append(f"Total load demand for the day ahead: {total_demand_kwh:.2f} kWh.")
+    statements.append(f"Total energy forecast for tomorrow: {total_solar_kwh:.2f} kWh.")
+
+    if energy_margin_type == "deficit" or energy_margin_kwh < -0.01:
+        statements.append(
+            "If you run your selected loads tomorrow, the system may not sustain them — "
+            f"expected shortfall of {abs(energy_margin_kwh):.2f} kWh."
+        )
+        if has_flexible_or_deferrable:
+            statements.append(
+                "Do not run flexible or deferrable loads tomorrow, or reduce their running hours."
+            )
+    else:
+        statements.append(
+            "If you run your selected loads tomorrow, the system is capable of sustaining them."
+        )
+        if energy_margin_type == "tight":
+            statements.append(
+                "Solar and demand are closely matched; consider running heavy loads during surplus windows."
+            )
+
+    if critical_fully_protected:
+        statements.append("Critical loads are fully covered by expected solar.")
+    else:
+        statements.append(
+            "Critical loads are not fully covered in some windows; prioritise essentials only."
+        )
+
+    if surplus_windows or deficit_windows:
+        step_min = int(_get(matching, "timestep_minutes", timestep_minutes) or timestep_minutes)
+        if surplus_windows:
+            sur_str = _format_windows_list(surplus_windows, step_min)
+            statements.append(f"Surplus windows (solar ≥ demand): {sur_str}.")
+        if deficit_windows:
+            def_str = _format_windows_list(deficit_windows, step_min)
+            statements.append(f"Deficit windows (demand > solar): {def_str}.")
+
+    return statements
 
 
 def _empty_result(

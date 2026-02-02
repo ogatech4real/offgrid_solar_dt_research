@@ -9,6 +9,7 @@ from .day_ahead import (
     DayAheadMatchingResult,
     TimeWindow,
     compute_day_ahead_matching,
+    format_day_ahead_statements,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "DayAheadMatchingResult",
     "TimeWindow",
     "compute_day_ahead_matching",
+    "format_day_ahead_statements",
 ]
