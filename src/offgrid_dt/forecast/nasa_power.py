@@ -1,0 +1,152 @@
+"""NASA POWER API client for physics-based solar irradiance (GHI).
+
+All solar energy and power calculations in the digital twin use data from NASA POWER
+(surface shortwave downwelling radiation / GHI). This keeps the system free,
+reproducible, and scientifically defensible for academic use.
+
+OpenWeather is used only for user location selection and contextual weather display;
+it is not used for irradiance or PV estimates.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+import requests
+
+from .openweather import IrradiancePoint
+
+LOG = logging.getLogger("offgrid_dt")
+
+NASA_POWER_BASE = "https://power.larc.nasa.gov/api/temporal/hourly/point"
+PARAM_GHI = "ALLSKY_SFC_SW_DWN"  # All-sky surface shortwave downward irradiance (W/m² or Wh/m² per hour)
+
+
+def fetch_ghi_hourly(
+    lat: float,
+    lon: float,
+    start_date: datetime,
+    end_date: Optional[datetime] = None,
+    time_standard: str = "UTC",
+    timeout_seconds: int = 30,
+) -> List[IrradiancePoint]:
+    """Fetch hourly GHI (ALLSKY_SFC_SW_DWN) from NASA POWER for the given date range.
+
+    The API returns hourly values; keys are YYYYMMDDHH and values are in Wh/m²
+    (hourly energy), which equals average irradiance in W/m² over that hour.
+
+    Args:
+        lat: Latitude (degrees).
+        lon: Longitude (degrees).
+        start_date: First day (00:00–24:00) in UTC. Only the date part is used.
+        end_date: Last day inclusive (UTC). If None, only start_date is requested.
+        time_standard: "UTC" or "LST".
+        timeout_seconds: Request timeout.
+
+    Returns:
+        List of IrradiancePoint (ts in UTC, ghi_wm2 in W/m²) for each hour in the range.
+        Hours are ordered from start_date 00:00 through end_date 23:00.
+    """
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    start_str = start_date.strftime("%Y%m%d")
+    if end_date is None:
+        end_date = start_date
+    elif end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+    end_str = end_date.strftime("%Y%m%d")
+
+    params = {
+        "parameters": PARAM_GHI,
+        "community": "RE",
+        "longitude": lon,
+        "latitude": lat,
+        "start": start_str,
+        "end": end_str,
+        "format": "JSON",
+        "time-standard": time_standard,
+    }
+    r = requests.get(NASA_POWER_BASE, params=params, timeout=timeout_seconds)
+    r.raise_for_status()
+    data = r.json()
+
+    points = _parse_nasa_power_ghi(data)
+    if not points:
+        LOG.warning("NASA POWER returned no GHI points for %s–%s", start_str, end_str)
+    return points
+
+
+def _parse_nasa_power_ghi(data: dict) -> List[IrradiancePoint]:
+    """Parse NASA POWER JSON response into IrradiancePoint list.
+
+    Expects properties.parameter.ALLSKY_SFC_SW_DWN with keys YYYYMMDDHH (UTC).
+    Values are Wh/m² per hour (equivalent to W/m² average over the hour).
+    """
+    points: List[IrradiancePoint] = []
+    try:
+        params = (data.get("properties") or {}).get("parameter") or {}
+        ghi_data = params.get(PARAM_GHI)
+        if not ghi_data or not isinstance(ghi_data, dict):
+            return points
+        # Sort by key so order is chronological
+        for key in sorted(ghi_data.keys()):
+            try:
+                # key format: YYYYMMDDHH
+                if len(key) != 10:
+                    continue
+                year = int(key[0:4])
+                month = int(key[4:6])
+                day = int(key[6:8])
+                hour = int(key[8:10])
+                ts = datetime(year, month, day, hour, 0, 0, tzinfo=timezone.utc)
+                val = ghi_data[key]
+                if val is None:
+                    continue
+                ghi = float(val)
+                # API uses -999 as fill; treat as 0
+                if ghi < 0:
+                    ghi = 0.0
+                points.append(IrradiancePoint(ts=ts, ghi_wm2=ghi))
+            except (ValueError, TypeError, IndexError):
+                continue
+    except Exception as e:
+        LOG.warning("Failed to parse NASA POWER response: %s", e)
+    return points
+
+
+def fetch_ghi_next_planning_days(
+    lat: float,
+    lon: float,
+    days: int = 1,
+    reference_utc: Optional[datetime] = None,
+) -> List[IrradiancePoint]:
+    """Fetch hourly GHI for the next planning day(s): 00:00–24:00 each calendar day.
+
+    'Next planning day' is defined as the first full calendar day at or after
+    reference_utc (default: now UTC). For a 2-day run, returns day1 (00:00–24:00)
+    and day2 (00:00–24:00), etc.
+
+    Args:
+        lat: Latitude (from user-selected location, e.g. OpenWeather geocoding).
+        lon: Longitude.
+        days: Number of consecutive calendar days to fetch.
+        reference_utc: Reference time (UTC). If None, uses now UTC.
+
+    Returns:
+        Hourly IrradiancePoint list for the requested days (24 * days points).
+    """
+    if reference_utc is None:
+        reference_utc = datetime.now(tz=timezone.utc)
+    if reference_utc.tzinfo is None:
+        reference_utc = reference_utc.replace(tzinfo=timezone.utc)
+
+    # Next planning day = first full calendar day after today (00:00–24:00 UTC)
+    today = reference_utc.date()
+    first_planning_day = today + timedelta(days=1)
+    last_planning_day = today + timedelta(days=days)
+    start_dt = datetime(first_planning_day.year, first_planning_day.month, first_planning_day.day, 0, 0, 0, tzinfo=timezone.utc)
+    end_date = datetime(last_planning_day.year, last_planning_day.month, last_planning_day.day, 23, 59, 59, tzinfo=timezone.utc)
+
+    return fetch_ghi_hourly(lat, lon, start_dt, end_date, time_standard="UTC")

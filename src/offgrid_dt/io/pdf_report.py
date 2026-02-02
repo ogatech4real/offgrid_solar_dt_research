@@ -215,7 +215,7 @@ def build_two_day_plan_pdf(
         c.showPage()
         y = h - 2.0 * cm
         c.setFont("Helvetica-Bold", 14)
-        c.drawString(x0, y, "Tomorrow — forecast-based plan")
+        c.drawString(x0, y, "Tomorrow — day-ahead plan (NASA POWER solar forecast)")
         y -= 0.7 * cm
 
         if tomorrow_outlook:
@@ -430,8 +430,10 @@ def build_two_day_plan_pdf_from_logs(
     kpi_Solar_utilization, kpi_Battery_throughput_kwh, served_task_ids, etc.
     """
     ADVISORY_DISCLAIMER = (
-        "This plan is advisory only. No automatic control of equipment. "
-        "Use guidance with household discretion. Logs remain the source of truth for reproducibility."
+        "Day-ahead energy planning only — not real-time control. Solar forecast is expected availability "
+        "for the next day(s) from NASA POWER (physics-based GHI). Recommendations are advisory and "
+        "robust to uncertainty. No automatic control of equipment; use guidance with household discretion. "
+        "Logs remain the source of truth for reproducibility."
     )
     df = pd.read_csv(state_csv_path)
     if df.empty:

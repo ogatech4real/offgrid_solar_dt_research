@@ -129,7 +129,7 @@ def plot_power_and_energy(ts: pd.DatetimeIndex, pv_kw: np.ndarray, dt_minutes: i
 _inject_css()
 
 st.markdown('<div class="app-title">Off-grid Solar Decision Support</div>', unsafe_allow_html=True)
-st.markdown('<p class="app-sub">Forecast-informed, survivability-first guidance for solar + battery households (advisory mode).</p>', unsafe_allow_html=True)
+st.markdown('<p class="app-sub">Day-ahead energy planning using NASA POWER solar data. Survivability-first, advisory guidance — not real-time control.</p>', unsafe_allow_html=True)
 
 # Optional auto-refresh (every 15 minutes)
 auto_enabled = st.session_state.get("auto_enabled", False)
@@ -173,7 +173,7 @@ with st.sidebar:
             st.session_state["longitude"] = lon
             st.session_state["location_name"] = loc_label
     else:
-        st.caption("Tip: add OpenWeather key in Streamlit Secrets to enable location search.")
+        st.caption("OpenWeather is used only for location search and weather display; solar estimates use NASA POWER.")
 
     cols = st.columns(2)
     lat = cols[0].number_input("Latitude", value=float(lat), format="%.6f")
@@ -216,6 +216,8 @@ with st.sidebar:
         st.session_state["location_name"] = st.session_state.get("location_name", "London, GB")
         run_btn = True
         st.session_state["sim_days"] = 2
+
+    st.caption("Solar input: NASA POWER (physics-based GHI for the next planning day). Location from OpenWeather geocoding.")
 
 # ---------------------------- Main: Load (distribution board) ----------------------------
 st.markdown("### Load — distribution board")
@@ -366,6 +368,7 @@ t0 = pd.to_datetime(res.get("start_time", df["timestamp"].iloc[0] if len(df) els
 
 # Replay control
 st.markdown("### Live Replay")
+st.caption("Timeline is day-ahead: first step is 00:00 UTC of the next planning day. Solar profile from NASA POWER.")
 step_max = max(0, len(df) - 1)
 default_step = int(st.session_state.get("replay_step", min(step_max, 0)))
 step = st.slider("Replay time", min_value=0, max_value=step_max, value=default_step, help="Scrub through the simulation timeline.")
@@ -469,8 +472,8 @@ with gcol2:
                 '<div class="muted">Reserve protected automatically (advisory only)</div></div>', unsafe_allow_html=True)
 
 # Forecast plot: PV power + cumulative energy for next 24/48h from replay point (§5.3: labeled as forecast, not certainty)
-st.markdown("### Solar Forecast: Power and Energy")
-st.caption("Forecast, not certainty — based on simulated PV for the digital twin. Use for planning only.")
+st.markdown("### Expected Solar Availability (Day-Ahead)")
+st.caption("Expected solar for the next day(s) from NASA POWER (GHI). Forecast, not certainty — recommendations are advisory and robust to uncertainty. Use for planning only.")
 horizon_hours = st.radio("Forecast window", [24, 48], horizontal=True)
 steps = int(horizon_hours * 60 / DT_MINUTES_DEFAULT)
 i0 = step
@@ -590,7 +593,7 @@ else:
 
 # Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
 st.markdown("### Downloads")
-st.caption("Evidence artifacts for reproducibility. PDF includes system summary, weather context, today + tomorrow plan, KPIs, and advisory disclaimer.")
+st.caption("Evidence artifacts for reproducibility. PDF includes system summary, weather context, day-ahead plan (NASA POWER solar), KPIs, and advisory disclaimer.")
 dcols = st.columns([2, 2, 2])
 with dcols[0]:
     st.download_button("Download state log (CSV)", data=Path(state_csv).read_bytes(), file_name="state_log.csv", mime="text/csv", width="stretch")
@@ -602,6 +605,7 @@ system_summary_for_pdf = {
     "PV capacity": f"{float(st.session_state.get('pv_kw', 0)):.1f} kW",
     "Battery": f"{float(st.session_state.get('bat_kwh', 0)):.1f} kWh",
     "Inverter limit": f"{float(st.session_state.get('inv_kw', 0)):.1f} kW",
+    "Solar source": "NASA POWER (day-ahead GHI)",
 }
 weather_summary = weather if weather else {}
 pdf_bytes = build_two_day_plan_pdf_from_logs(

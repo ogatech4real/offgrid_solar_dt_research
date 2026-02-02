@@ -11,7 +11,8 @@ import numpy as np
 from offgrid_dt.control.controllers import BaseController, ControllerInput
 from offgrid_dt.dt.battery import BatteryState, update_soc
 from offgrid_dt.dt.load import build_daily_tasks, requested_kw_for_step
-from offgrid_dt.forecast.openweather import OpenWeatherSolarClient, synthetic_irradiance_forecast
+from offgrid_dt.forecast.nasa_power import fetch_ghi_next_planning_days
+from offgrid_dt.forecast.openweather import synthetic_irradiance_forecast
 from offgrid_dt.forecast.pv_power import irradiance_to_pv_power_kw
 from offgrid_dt.io.logger import RunLogger
 from offgrid_dt.io.schema import Appliance, StepRecord, SystemConfig
@@ -30,10 +31,15 @@ def simulate(
     openai_api_key: Optional[str] = None,
     openai_model: str = "gpt-4o-mini",
     out_dir: Optional[Path] = None,
-) -> Dict[str, str]:
-    """Run closed-loop simulation and write logs.
+    reference_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Run closed-loop day-ahead planning simulation and write logs.
 
-    Returns paths to generated log files.
+    Solar input is from NASA POWER (GHI for the next planning day(s)); OpenWeather
+    is not used for irradiance. Simulation timeline starts at 00:00 UTC of the
+    first planning day (next calendar day) so that all PV is NASA-derived.
+
+    Returns paths to generated log files and start_time.
     """
     rng = np.random.default_rng(seed)
     dt_minutes = cfg.timestep_minutes
@@ -63,22 +69,43 @@ def simulate(
         y_new = np.interp(x_new, x_old, np.asarray(series, dtype=float))
         return [float(v) for v in y_new]
 
-    # PV forecast source
-    start = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
+    # Day-ahead planning: first planning day = next calendar day 00:00–24:00 UTC
+    now_utc = reference_utc or datetime.now(tz=timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    first_planning_date = now_utc.date() + timedelta(days=1)
+    start = datetime(
+        first_planning_date.year,
+        first_planning_date.month,
+        first_planning_date.day,
+        0,
+        0,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    # PV forecast: NASA POWER (primary), synthetic fallback
     pv_forecast_kw_full: List[float] = []
     try:
-        if openweather_api_key:
-            client = OpenWeatherSolarClient(openweather_api_key, base_url=openweather_base_url)
-            irr = client.fetch_irradiance_forecast(cfg.latitude, cfg.longitude, hours=24 * days)
-        else:
-            irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
-        pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
-    except Exception:
-        log.warning("PV forecast fetch failed; falling back to synthetic irradiance.")
+        irr = fetch_ghi_next_planning_days(
+            lat=cfg.latitude,
+            lon=cfg.longitude,
+            days=days,
+            reference_utc=now_utc,
+        )
+        if irr:
+            pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
+            log.info("Using NASA POWER GHI for day-ahead PV forecast (%d points)", len(irr))
+    except Exception as e:
+        log.warning("NASA POWER fetch failed (%s); falling back to synthetic irradiance.", e)
         irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
         pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
 
-    # Ensure forecast aligns to simulator resolution
+    if not pv_forecast_kw_full:
+        irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
+        pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
+
+    # Resample hourly (NASA) to simulator resolution (e.g. 15-min)
     pv_forecast_kw_full = _resample_to_steps(pv_forecast_kw_full, total_steps)
 
     # Logger
