@@ -24,7 +24,7 @@ from offgrid_dt.io.schema import Appliance, SystemConfig
 from offgrid_dt.io.pdf_report import build_two_day_plan_pdf_from_logs
 from offgrid_dt.matching import compute_day_ahead_matching
 
-st.set_page_config(page_title="Off-grid Solar DT", layout="wide")
+st.set_page_config(page_title="Off-Grid Solar Energy Planner", layout="wide")
 
 DT_MINUTES_DEFAULT = 15
 AUTO_REFRESH_MS = 15 * 60 * 1000  # 15 minutes
@@ -34,19 +34,79 @@ AUTO_REFRESH_MS = 15 * 60 * 1000  # 15 minutes
 def _inject_css() -> None:
     st.markdown(
         """
+        <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
         <style>
-          .app-title {font-size: 2.0rem; font-weight: 750; margin-bottom: 0.25rem;}
-          .app-sub {opacity: 0.85; margin-top: 0;}
-          .card {border: 1px solid rgba(49, 51, 63, 0.18); border-radius: 16px; padding: 14px 16px; background: rgba(255,255,255,0.02);}
-          .kpi {font-size: 1.35rem; font-weight: 700;}
-          .muted {opacity: 0.78;}
-          .pill {display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.85rem; border: 1px solid rgba(49, 51, 63, 0.25);}
-          .pill.low {background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35);}
-          .pill.med {background: rgba(234,179,8,0.14); border-color: rgba(234,179,8,0.35);}
-          .pill.high {background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35);}
-          .load-board {border: 1px solid rgba(49, 51, 63, 0.25); border-radius: 12px; padding: 12px 16px; margin: 8px 0;}
-          .load-circuit {display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(49,51,63,0.1);}
-          .load-total {font-size: 1.1rem; font-weight: 700; margin-top: 8px;}
+          /* Warm colour grade & typography */
+          :root {
+            --bg-warm: #faf7f2;
+            --bg-card: rgba(255, 252, 248, 0.9);
+            --border-warm: rgba(194, 65, 12, 0.12);
+            --text-soft: #2d3748;
+            --text-muted: #5a6578;
+            --accent-solar: #c2410c;
+            --accent-amber: #d97706;
+            --accent-success: #059669;
+            --accent-caution: #ca8a04;
+            --accent-risk: #dc2626;
+          }
+          html, body, [class*="css"], .stApp { font-family: 'Plus Jakarta Sans', -apple-system, sans-serif !important; }
+          .stApp { background: linear-gradient(180deg, #fefcf8 0%, #faf5ed 50%, #f7f0e4 100%) !important; }
+          .stSidebar { background: linear-gradient(180deg, #fdfaf5 0%, #f8f3eb 100%) !important; }
+          .stSidebar [data-testid="stSidebarContent"] { border-right: 1px solid var(--border-warm); }
+          /* Header block */
+          .hero-wrap { margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-warm); }
+          .app-title {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent-solar);
+            letter-spacing: -0.02em;
+            margin-bottom: 0.35rem;
+          }
+          .app-sub {
+            font-size: 1.05rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+            margin-top: 0;
+            max-width: 42rem;
+          }
+          /* Cards: warm, soft shadow */
+          .card {
+            border: 1px solid var(--border-warm);
+            border-radius: 16px;
+            padding: 14px 16px;
+            background: var(--bg-card);
+            box-shadow: 0 1px 3px rgba(194, 65, 12, 0.06);
+          }
+          .kpi { font-size: 1.35rem; font-weight: 700; color: var(--text-soft); }
+          .muted { color: var(--text-muted); font-size: 0.9rem; opacity: 0.95; }
+          /* Risk pills: warmer tones */
+          .pill {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+          }
+          .pill.low { background: rgba(5, 150, 105, 0.14); border: 1px solid rgba(5, 150, 105, 0.35); color: #047857; }
+          .pill.med { background: rgba(202, 138, 4, 0.14); border: 1px solid rgba(202, 138, 4, 0.35); color: #a16207; }
+          .pill.high { background: rgba(220, 38, 38, 0.12); border: 1px solid rgba(220, 38, 38, 0.35); color: #b91c1c; }
+          /* Load board */
+          .load-board {
+            border: 1px solid var(--border-warm);
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin: 8px 0;
+            background: var(--bg-card);
+            box-shadow: 0 1px 2px rgba(194, 65, 12, 0.04);
+          }
+          .load-circuit { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(194, 65, 12, 0.08); }
+          .load-total { font-size: 1.1rem; font-weight: 700; color: var(--accent-solar); margin-top: 8px; }
+          /* Section headings: warmer */
+          h1, h2, h3 { font-family: 'Plus Jakarta Sans', sans-serif !important; color: var(--text-soft) !important; }
+          /* Metric and caption text */
+          [data-testid="stMetricValue"] { font-family: 'Plus Jakarta Sans', sans-serif !important; color: var(--text-soft) !important; }
+          .stCaption { color: var(--text-muted) !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -121,7 +181,7 @@ def plot_power_and_energy(ts: pd.DatetimeIndex, pv_kw: np.ndarray, dt_minutes: i
         go.Scatter(x=ts, y=cum_kwh, mode="lines", line_shape="spline", name="Cumulative PV Energy (kWh)"),
         secondary_y=True,
     )
-    fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
+    fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"), font=dict(family="Plus Jakarta Sans, sans-serif"))
     fig.update_yaxes(title_text="kW", secondary_y=False)
     fig.update_yaxes(title_text="kWh", secondary_y=True)
     return fig
@@ -130,8 +190,13 @@ def plot_power_and_energy(ts: pd.DatetimeIndex, pv_kw: np.ndarray, dt_minutes: i
 
 _inject_css()
 
-st.markdown('<div class="app-title">Off-grid Solar Decision Support</div>', unsafe_allow_html=True)
-st.markdown('<p class="app-sub">Day-ahead energy planning using NASA POWER solar data. Survivability-first, advisory guidance — not real-time control.</p>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="hero-wrap">'
+    '<div class="app-title">Off-Grid Solar Energy Planner</div>'
+    '<p class="app-sub">Day-ahead household energy planning using real solar data. Clear guidance to protect essential loads and use solar efficiently.</p>'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
 # Optional auto-refresh (every 15 minutes) — triggers full rerun so "run if last run >14 min" runs
 auto_enabled = st.session_state.get("auto_enabled", False)
@@ -142,8 +207,8 @@ client = get_openweather_client()
 
 # ---------------------------- Sidebar: smart configuration ----------------------------
 with st.sidebar:
-    st.header("System Configuration")
-    st.caption("Set your system once; the assistant generates a daily plan automatically.")
+    st.header("Your setup")
+    st.caption("Set your system once — we'll generate your daily plan automatically.")
 
     # Location: search -> geocode -> auto-fill
     st.subheader("Location")
@@ -173,7 +238,7 @@ with st.sidebar:
             st.session_state["longitude"] = lon
             st.session_state["location_name"] = loc_label
     else:
-        st.caption("OpenWeather is used only for location search and weather display; solar estimates use NASA POWER.")
+        st.caption("We use OpenWeather for location and weather; your solar estimates come from NASA POWER.")
 
     cols = st.columns(2)
     lat = cols[0].number_input("Latitude", value=float(lat), format="%.6f")
@@ -195,7 +260,7 @@ with st.sidebar:
 
     # Run modes
     st.subheader("Run Mode")
-    auto_enabled = st.toggle("Auto-run every 15 minutes", value=auto_enabled, help="Refreshes the app every 15 min and re-runs the day-ahead plan if the last run was more than 14 min ago.")
+    auto_enabled = st.toggle("Auto-refresh every 15 minutes", value=auto_enabled, help="We'll refresh the app every 15 min and re-run your plan if the last run was more than 14 min ago.")
     st.session_state["auto_enabled"] = auto_enabled
 
     _controllers_list = get_controllers()
@@ -207,8 +272,8 @@ with st.sidebar:
     days = st.selectbox("Planning horizon (days)", [2, 3, 7], index=0, help="Number of days to simulate for replay and day-ahead plan (first day = next planning day).")
     st.session_state["sim_days"] = days
 
-    run_btn = st.button("Run digital twin now", type="primary")
-    demo_btn = st.button("Run demo (2 days)", help="Day-ahead planning demo — explore the dashboard with default location and 2 days.")
+    run_btn = st.button("Run my plan", type="primary")
+    demo_btn = st.button("Try a quick demo (2 days)", help="See the full dashboard with a sample location and 2-day plan.")
     if demo_btn:
         st.session_state["loc_query"] = st.session_state.get("loc_query", "London")
         st.session_state["latitude"] = st.session_state.get("latitude", 51.5074)
@@ -217,11 +282,11 @@ with st.sidebar:
         run_btn = True
         st.session_state["sim_days"] = 2
 
-    st.caption("Solar input: NASA POWER (physics-based GHI for the next planning day). Location from OpenWeather geocoding.")
+    st.caption("Solar data: NASA POWER. Location: OpenWeather.")
 
 # ---------------------------- Main: Current Weather (top; updates when location is set) ----------------------------
-st.markdown("### Current Weather")
-st.caption("Context for your location. Updates when you select or change location (not when you run the twin).")
+st.markdown("### Current weather at your location")
+st.caption("Updates when you change your location in the sidebar.")
 weather = None
 if client:
     try:
@@ -243,11 +308,11 @@ if weather:
     wcols[3].metric("Cloud cover (%)", f"{weather.get('cloud_cover_pct', 0):.0f}")
     wcols[4].metric("Wind (m/s)", f"{weather.get('wind_speed_mps', 0):.1f}")
 else:
-    st.caption("Set a location in the sidebar (search or lat/lon) and add an OpenWeather API key in secrets to see current weather.")
+    st.caption("Set your location in the sidebar and add an OpenWeather API key in secrets to see the weather here.")
 
 # ---------------------------- Main: Load (distribution board) ----------------------------
-st.markdown("### Load — distribution board")
-st.caption("Switch loads on/off as if they were circuits on a distribution board. Total load updates from your selection. Advisory only — no physical switching.")
+st.markdown("### Your loads")
+st.caption("Turn loads on or off to match your household. Your total load updates as you select — this is advisory only; nothing is switched automatically.")
 catalog = appliance_catalog()
 # Toggle and qty widgets own their keys (load_on_*, qty_*); do not set them via session_state.
 
@@ -280,7 +345,7 @@ for cat_label, cat_key in [("Critical", "critical"), ("Flexible", "flexible"), (
                     st.caption("—")
 
 total_load_kw = total_load_w / 1000.0
-st.markdown(f'<div class="load-board"><span class="load-total">Total load (selected): **{total_load_kw:.2f} kW**</span></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="load-board"><span class="load-total">Your total load: **{total_load_kw:.2f} kW**</span></div>', unsafe_allow_html=True)
 st.session_state["selected_appliances"] = selected_names
 st.session_state["qty_map"] = qty_map
 
@@ -296,8 +361,8 @@ with run_hrs_cols[2]:
     run_hrs_deferrable = st.number_input("Deferrable (h/day)", min_value=0.0, max_value=24.0, value=2.0, step=0.5, key="run_hrs_deferrable")
 
 # Estimated consumption for next 12h and 24h (00:00–24:00) based on load DB selections and running hours
-st.markdown("#### Estimated consumption (planning — next day 00:00–24:00)")
-st.caption("Energy (kWh) and average power (kW) for the next 12h and 24h based on selected loads and running hours above. Use for planning and comparison with forecast.")
+st.markdown("#### Your estimated consumption (next day)")
+st.caption("Based on your selected loads and running hours — use this to compare with the solar outlook below.")
 run_hrs_by_cat = {"critical": run_hrs_critical, "flexible": run_hrs_flexible, "deferrable": run_hrs_deferrable}
 energy_24h_kwh = 0.0
 for a in catalog:
@@ -366,7 +431,7 @@ if run_btn:
     _name_to_controller = {c.name: c for c in get_controllers()}
     controller = _name_to_controller[st.session_state.get("controller_name", "forecast_heuristic")]
 
-    with st.spinner("Running digital twin…"):
+    with st.spinner("Building your plan…"):
         result = simulate(
             cfg=cfg,
             appliances=appliances,
@@ -383,7 +448,7 @@ if run_btn:
 # ---------------------------- Load result ----------------------------
 res = st.session_state.get("last_run")
 if not res:
-    st.info("Run the digital twin to see results. Use **Run demo (2 days)** if you want a quick start.")
+    st.info("Run your plan to see results. Use **Try a quick demo (2 days)** in the sidebar for a one-click preview.")
     st.stop()
 
 state_csv = res["state_csv"]
@@ -393,11 +458,11 @@ df["ts"] = pd.to_datetime(df["timestamp"])
 t0 = pd.to_datetime(res.get("start_time", df["timestamp"].iloc[0] if len(df) else None))
 
 # Replay control
-st.markdown("### Live Replay")
-st.caption("Timeline is day-ahead: first step is 00:00 UTC of the next planning day. Solar profile from NASA POWER.")
+st.markdown("### Explore your plan over time")
+st.caption("Scrub through the next day (00:00–24:00) to see how solar and your loads interact at each step.")
 step_max = max(0, len(df) - 1)
 default_step = int(st.session_state.get("replay_step", min(step_max, 0)))
-step = st.slider("Replay time", min_value=0, max_value=step_max, value=default_step, help="Scrub through the simulation timeline.")
+step = st.slider("Time step", min_value=0, max_value=step_max, value=default_step, help="Move the slider to see any moment in your plan.")
 st.session_state["replay_step"] = step
 
 row = df.iloc[step]
@@ -441,8 +506,8 @@ def _fmt_tw(tw, step_min):
     return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
 
 # ---------------------------- Day-ahead outlook (Advisory) ----------------------------
-st.markdown("### Day-ahead outlook (00:00–24:00)")
-st.markdown('**Advisory** — Expected demand vs expected solar for the next planning day. NASA POWER–based; uncertainty applies.')
+st.markdown("### Your day-ahead outlook (00:00–24:00)")
+st.markdown('**What to expect** — How your demand compares with expected solar for the next planning day. Based on real solar data; conditions may vary.')
 if matching:
     step_min = _m(matching, "timestep_minutes", DT_MINUTES_DEFAULT)
     risk_val = _m(matching, "risk_level", "")
@@ -456,16 +521,16 @@ if matching:
     ts_24h = pd.to_datetime(df_day["ts"])
     fig_solar = go.Figure()
     fig_solar.add_trace(go.Scatter(x=ts_24h, y=pv_kw_24h, mode="lines", line_shape="spline", name="Expected PV power (kW)", line=dict(color="#0ea5e9")))
-    fig_solar.update_layout(title="Expected solar (PV power) over next 24h — NASA POWER", height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="kW")
+    fig_solar.update_layout(title="Expected solar over the next 24 hours", height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="kW", font=dict(family="Plus Jakarta Sans, sans-serif"))
     st.plotly_chart(fig_solar, use_container_width=True)
 
     # 2) Summary: total expected solar, planned demand
-    st.markdown("#### Summary (24h)")
+    st.markdown("#### Your 24h summary")
     mcol1, mcol2, mcol3, mcol4 = st.columns(4)
     with mcol1:
-        st.metric("Expected solar (24h)", f"{float(_m(matching, 'total_solar_kwh', 0)):.2f} kWh")
+        st.metric("Expected solar", f"{float(_m(matching, 'total_solar_kwh', 0)):.2f} kWh")
     with mcol2:
-        st.metric("Planned demand (24h)", f"{float(_m(matching, 'total_demand_kwh', 0)):.2f} kWh")
+        st.metric("Your planned demand", f"{float(_m(matching, 'total_demand_kwh', 0)):.2f} kWh")
     with mcol3:
         margin_label = f"{float(_m(matching, 'energy_margin_kwh', 0)):+.2f} kWh"
         st.metric("Energy margin", margin_label)
@@ -480,7 +545,7 @@ if matching:
     surplus_flag = pv_kw_24h >= load_kw_day
     colors = ["#22c55e" if s else "#ef4444" for s in surplus_flag]
     fig_bars = go.Figure(go.Bar(x=ts_24h, y=[1 if s else -1 for s in surplus_flag], marker_color=colors, name="Surplus (green) / Deficit (red)"))
-    fig_bars.update_layout(title="Surplus vs deficit by 15-min (green = solar ≥ demand, red = demand > solar)", height=220, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="", yaxis=dict(tickvals=[-1, 1], ticktext=["Deficit", "Surplus"]))
+    fig_bars.update_layout(title="When you have surplus (green) vs deficit (red) — 15-min steps", height=220, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="", yaxis=dict(tickvals=[-1, 1], ticktext=["Deficit", "Surplus"]), font=dict(family="Plus Jakarta Sans, sans-serif"))
     st.plotly_chart(fig_bars, use_container_width=True)
 
     # 5) Surplus/deficit windows list — matches bar chart; note on critical load and inverter
@@ -495,31 +560,31 @@ if matching:
             st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw, step_min) for tw in def_))
         else:
             st.caption("No deficit windows.")
-        st.caption("The bar chart above shows the same: green = surplus, red = deficit. During deficit, critical load may be at risk if inverter or supply is low; prioritise essentials.")
+        st.caption("Green = surplus (solar covers demand). Red = deficit — during these times, prioritise essentials and consider shifting heavy loads to surplus windows.")
     if not _m(matching, "critical_fully_protected", True):
-        st.warning("Critical loads are not fully protected in all timesteps. Prioritise essentials only.")
+        st.warning("Your critical loads aren't fully protected in every timestep. Prioritise essentials and avoid adding heavy loads during deficit windows.")
 else:
-    st.caption("Run the digital twin to see day-ahead matching.")
+    st.caption("Run your plan to see your day-ahead outlook.")
 
 # KPI summary cards (state CSV: cumulative at current replay step — real, from day-ahead simulation)
-st.caption("From day-ahead simulation at current replay step. Values are cumulative over the run and update when you run the twin again.")
+st.caption("At the current time step — cumulative over your run. Values update when you run your plan again.")
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.markdown('<div class="card"><div class="muted">Critical power reliability</div>'
+    st.markdown('<div class="card"><div class="muted">Essential power reliability</div>'
                 f'<div class="kpi">{100*float(row.get("kpi_CLSR", 0)):.1f}%</div>'
-                '<div class="muted">How consistently essentials stay powered</div></div>', unsafe_allow_html=True)
+                '<div class="muted">How consistently your essentials stay powered</div></div>', unsafe_allow_html=True)
 with col2:
-    st.markdown('<div class="card"><div class="muted">Blackout time (critical)</div>'
+    st.markdown('<div class="card"><div class="muted">Blackout time (essentials)</div>'
                 f'<div class="kpi">{float(row.get("kpi_Blackout_minutes", 0)):.0f} min</div>'
                 '<div class="muted">Unserved essentials so far</div></div>', unsafe_allow_html=True)
 with col3:
     st.markdown('<div class="card"><div class="muted">Solar autonomy</div>'
                 f'<div class="kpi">{100*float(row.get("kpi_SAR", 0)):.1f}%</div>'
-                '<div class="muted">Share of demand met by solar</div></div>', unsafe_allow_html=True)
+                '<div class="muted">Share of your demand met by solar</div></div>', unsafe_allow_html=True)
 with col4:
-    st.markdown('<div class="card"><div class="muted">Battery wear proxy</div>'
+    st.markdown('<div class="card"><div class="muted">Battery throughput</div>'
                 f'<div class="kpi">{float(row.get("kpi_Battery_throughput_kwh", 0)):.2f} kWh</div>'
-                '<div class="muted">Total charge/discharge throughput</div></div>', unsafe_allow_html=True)
+                '<div class="muted">Charge/discharge so far (wear proxy)</div></div>', unsafe_allow_html=True)
 
 # Instantaneous power available on inverter vs total selected load
 pv_now_kw = float(row.get("pv_now_kw", 0.0))
@@ -533,19 +598,19 @@ total_selected_kw = sum(
     for a in appliance_catalog()
     if st.session_state.get(f"load_on_{a.id}", False)
 ) / 1000.0
-st.markdown("#### Power available (inverter) vs load")
+st.markdown("#### Power available vs your load (at this time step)")
 pcols = st.columns(3)
 with pcols[0]:
-    st.metric("PV now (kW)", f"{pv_now_kw:.2f}")
+    st.metric("Solar now", f"{pv_now_kw:.2f} kW")
 with pcols[1]:
-    st.metric("Power available (PV + battery)", f"{power_available_kw:.2f} kW")
+    st.metric("Power available (solar + battery)", f"{power_available_kw:.2f} kW")
 with pcols[2]:
-    st.metric("Total selected load", f"{total_selected_kw:.2f} kW")
-st.caption("Power available = PV at this timestep + inverter capacity from battery (when SOC > reserve). Compare with total load from the distribution board.")
+    st.metric("Your total selected load", f"{total_selected_kw:.2f} kW")
+st.caption("What you can draw right now (solar + battery when SOC is above reserve) versus what your selected loads ask for.")
 
-# Recommendation (for current replay step; regenerated when you run the twin again)
-st.markdown("### Recommendation")
-st.caption("For the current replay step. Based on the day-ahead run; regenerated when you run the digital twin again.")
+# Recommendation (for current replay step; regenerated when you run again)
+st.markdown("### Recommendation for this time step")
+st.caption("Guidance for the moment you've selected — regenerated when you run your plan again.")
 gdf = pd.read_json(guidance_jsonl, lines=True)
 if "timestamp" in gdf.columns:
     gdf["ts"] = pd.to_datetime(gdf["timestamp"], utc=True)
@@ -572,11 +637,11 @@ with gcol2:
     battery_state_label = "Safe" if risk_lower == "low" else ("Caution" if risk_lower == "medium" else "Risk")
     st.markdown('<div class="card"><div class="muted">Battery state</div>'
                 f'<div class="kpi">{soc_pct:.0f}% SOC · {battery_state_label}</div>'
-                '<div class="muted">Reserve protected automatically (advisory only)</div></div>', unsafe_allow_html=True)
+                '<div class="muted">We keep a reserve for you; this is advisory only.</div></div>', unsafe_allow_html=True)
 
 # Forecast from replay point (24h or 48h) — for exploring the timeline
-st.markdown("### Solar forecast from replay point (24h or 48h)")
-horizon_hours = st.radio("Forecast window", [24, 48], horizontal=True, key="forecast_horizon")
+st.markdown("### Solar forecast from this time step")
+horizon_hours = st.radio("Show next", [24, 48], format_func=lambda x: f"{x} hours", horizontal=True, key="forecast_horizon")
 steps = int(horizon_hours * 60 / DT_MINUTES_DEFAULT)
 i0 = step
 i1 = min(i0 + steps, len(df))
@@ -596,8 +661,8 @@ fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(
 st.plotly_chart(fig2, width="stretch")
 
 # Appliance advisory (day-ahead) — grouped by category; live from matching
-st.markdown("### Appliance advisory (day-ahead)")
-st.caption("From day-ahead matching (surplus/deficit + priority). Grouped by category. Advisory only — no automatic control.")
+st.markdown("### Appliance advice for tomorrow")
+st.caption("When to run each load based on surplus and deficit — grouped by type. This is advice only; you stay in control.")
 selected_appliances = st.session_state.get("selected_appliances", [])
 qty_map = st.session_state.get("qty_map", {})
 catalog = {a.name: a for a in appliance_catalog()}
@@ -652,22 +717,22 @@ if matching and adv_list:
         df_sub = pd.DataFrame(subset)[["Appliance", "Power", "Status", "Why"]]
         st.dataframe(df_sub.style.applymap(_style_advisory, subset=["Status"]), use_container_width=True, hide_index=True)
 else:
-    st.caption("Run the digital twin to see appliance advisories from day-ahead matching.")
+    st.caption("Run your plan to see appliance advice from your day-ahead outlook.")
 
 # Schedule heatmap (log-driven; §2.2 Digital twin replay)
-st.markdown("### Recommended Schedule (Heatmap)")
+st.markdown("### Recommended schedule (when to run what)")
 day_df2 = df.copy()
 day_df2["day"] = day_df2["ts"].dt.floor("D")
 days_unique = sorted(day_df2["day"].unique())
 if not days_unique:
-    st.caption("No schedule available.")
+    st.caption("No schedule data yet.")
 else:
     # Day to show: default to the day containing the current replay step
     now_day = now_ts.floor("D") if hasattr(now_ts, "floor") else pd.Timestamp(now_ts).floor("D")
     day_index = next((i for i, d in enumerate(days_unique) if d == now_day), 0)
     day_options = list(range(len(days_unique)))
     day_choice_idx = st.selectbox(
-        "Day to show",
+        "Pick a day",
         options=day_options,
         index=day_index,
         format_func=lambda i: str(days_unique[i].date()) if i < len(days_unique) else "",
@@ -698,12 +763,12 @@ else:
 
     x_labels = [f"{(i*DT_MINUTES_DEFAULT)//60:02d}:{(i*DT_MINUTES_DEFAULT)%60:02d}" for i in range(steps_in_day)]
     fig_hm = go.Figure(data=go.Heatmap(z=matrix, x=x_labels, y=apps))
-    fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10))
+    fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10), font=dict(family="Plus Jakarta Sans, sans-serif"))
     st.plotly_chart(fig_hm, width="stretch")
 
 # Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
-st.markdown("### Downloads")
-st.caption("Evidence artifacts for reproducibility. PDF includes system summary, weather context, day-ahead plan (NASA POWER solar), KPIs, and advisory disclaimer.")
+st.markdown("### Download your plan")
+st.caption("Save your state log, guidance log, or a full PDF (today + tomorrow) for your records or sharing.")
 dcols = st.columns([2, 2, 2])
 with dcols[0]:
     st.download_button("Download state log (CSV)", data=Path(state_csv).read_bytes(), file_name="state_log.csv", mime="text/csv", width="stretch")
