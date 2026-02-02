@@ -294,13 +294,21 @@ def _compute_appliance_advisories(
     energy_margin_type: EnergyMarginType,
     timestep_minutes: int,
 ) -> List[ApplianceAdvisory]:
-    """Derive appliance status from surplus/deficit windows and load category."""
+    """Derive appliance status from surplus/deficit windows, load category, and duration.
+
+    Each advisory is unique and verifiable: uses actual surplus/deficit times from the
+    day-ahead solar vs demand comparison, and appliance duration_steps to recommend
+    windows long enough for each load.
+    """
     advisories: List[ApplianceAdvisory] = []
     surplus_coverage_ratio = _surplus_coverage_ratio(surplus_windows, timestep_minutes)
     has_surplus_windows = len(surplus_windows) > 0
-    recommended_window_str = _first_surplus_window_str(surplus_windows, timestep_minutes)
+    deficit_times_str = _format_windows_list(deficit_windows, timestep_minutes) if deficit_windows else ""
 
     for a in appliances:
+        power_kw = float(a.power_w) / 1000.0
+        duration_steps = max(1, getattr(a, "duration_steps", 1))
+
         if a.category == "critical":
             if critical_fully_protected:
                 advisories.append(ApplianceAdvisory(
@@ -308,48 +316,104 @@ def _compute_appliance_advisories(
                     name=a.name,
                     category="critical",
                     status="safe_to_run",
-                    reason="Critical load is fully covered by expected solar across the day.",
+                    reason=f"Your {a.name} ({power_kw:.2f} kW) is covered by expected solar all day.",
                 ))
             else:
+                shortfall_phrase = (
+                    f"Shortfall expected {deficit_times_str}. "
+                    if deficit_times_str
+                    else "Expected solar may not cover essentials in some windows. "
+                )
                 advisories.append(ApplianceAdvisory(
                     appliance_id=a.id,
                     name=a.name,
                     category="critical",
                     status="avoid_today",
-                    reason="Expected solar may not cover critical demand in some windows; prioritise essentials only.",
+                    reason=f"{shortfall_phrase}Keep {a.name} on and avoid adding load then.",
                 ))
             continue
 
-        # Flexible / deferrable
+        # Flexible / deferrable: use surplus windows that fit this appliance's duration
         if not has_surplus_windows or energy_margin_type == "deficit":
-            advisories.append(ApplianceAdvisory(
-                appliance_id=a.id,
-                name=a.name,
-                category=a.category,
-                status="avoid_today",
-                reason="Day-ahead outlook shows deficit or no surplus windows; avoid non-essential use today.",
-            ))
+            if deficit_windows:
+                def_times = _format_windows_list(deficit_windows, timestep_minutes)
+                advisories.append(ApplianceAdvisory(
+                    appliance_id=a.id,
+                    name=a.name,
+                    category=a.category,
+                    status="avoid_today",
+                    reason=(
+                        f"Tomorrow demand exceeds solar in {def_times}. "
+                        f"Avoid running {a.name} ({power_kw:.2f} kW) then; run in surplus windows if any."
+                    ),
+                ))
+            else:
+                advisories.append(ApplianceAdvisory(
+                    appliance_id=a.id,
+                    name=a.name,
+                    category=a.category,
+                    status="avoid_today",
+                    reason=f"No surplus windows tomorrow; avoid non-essential use of {a.name}.",
+                ))
             continue
 
-        # Surplus windows exist: recommend running in them
-        if surplus_coverage_ratio >= 0.5:
-            advisories.append(ApplianceAdvisory(
-                appliance_id=a.id,
-                name=a.name,
-                category=a.category,
-                status="safe_to_run",
-                recommended_window=recommended_window_str,
-                reason="Solar surplus covers a large part of the day; safe to run within your usual window.",
-            ))
+        best_tw, fallback_tw = _best_surplus_window_for_duration(
+            surplus_windows, duration_steps, timestep_minutes
+        )
+        chosen_tw = best_tw or fallback_tw
+        recommended_window_str = (
+            _format_window_times(chosen_tw, timestep_minutes) if chosen_tw else ""
+        )
+
+        if best_tw:
+            # A surplus window is long enough for this appliance
+            if surplus_coverage_ratio >= 0.5:
+                advisories.append(ApplianceAdvisory(
+                    appliance_id=a.id,
+                    name=a.name,
+                    category=a.category,
+                    status="safe_to_run",
+                    recommended_window=recommended_window_str,
+                    reason=(
+                        f"Run {a.name} between {recommended_window_str} — "
+                        f"solar exceeds your load then ({power_kw:.2f} kW)."
+                    ),
+                ))
+            else:
+                advisories.append(ApplianceAdvisory(
+                    appliance_id=a.id,
+                    name=a.name,
+                    category=a.category,
+                    status="run_only_in_recommended_window",
+                    recommended_window=recommended_window_str,
+                    reason=(
+                        f"Run {a.name} only between {recommended_window_str} — "
+                        f"solar covers your load ({power_kw:.2f} kW) in that window."
+                    ),
+                ))
         else:
-            advisories.append(ApplianceAdvisory(
-                appliance_id=a.id,
-                name=a.name,
-                category=a.category,
-                status="run_only_in_recommended_window",
-                recommended_window=recommended_window_str,
-                reason="Run only during surplus windows (solar ≥ demand) to avoid shortfall.",
-            ))
+            # No window long enough; recommend longest surplus as fallback
+            if fallback_tw:
+                fallback_str = _format_window_times(fallback_tw, timestep_minutes)
+                advisories.append(ApplianceAdvisory(
+                    appliance_id=a.id,
+                    name=a.name,
+                    category=a.category,
+                    status="run_only_in_recommended_window",
+                    recommended_window=fallback_str,
+                    reason=(
+                        f"{a.name} needs {duration_steps * timestep_minutes // 60}h continuous surplus; "
+                        f"longest surplus is {fallback_str}. Run there if needed ({power_kw:.2f} kW)."
+                    ),
+                ))
+            else:
+                advisories.append(ApplianceAdvisory(
+                    appliance_id=a.id,
+                    name=a.name,
+                    category=a.category,
+                    status="avoid_today",
+                    reason=f"No surplus window long enough for {a.name} ({power_kw:.2f} kW) tomorrow.",
+                ))
     return advisories
 
 
@@ -368,3 +432,32 @@ def _first_surplus_window_str(surplus_windows: List[TimeWindow], timestep_minute
     if not surplus_windows:
         return ""
     return _format_window_times(surplus_windows[0], timestep_minutes)
+
+
+def _format_windows_list(windows: List[TimeWindow], timestep_minutes: int) -> str:
+    """Format multiple windows as '08:00–10:00 and 12:00–14:00'."""
+    if not windows:
+        return ""
+    return " and ".join(_format_window_times(tw, timestep_minutes) for tw in windows)
+
+
+def _window_length_steps(tw: TimeWindow) -> int:
+    """Number of steps in the window (inclusive)."""
+    return tw.end_step - tw.start_step + 1
+
+
+def _best_surplus_window_for_duration(
+    surplus_windows: List[TimeWindow],
+    duration_steps: int,
+    timestep_minutes: int,
+) -> Tuple[Optional[TimeWindow], Optional[TimeWindow]]:
+    """Find first surplus window that fits duration_steps; fallback = longest surplus window."""
+    if not surplus_windows:
+        return None, None
+    # First that fits
+    for tw in surplus_windows:
+        if _window_length_steps(tw) >= duration_steps:
+            return tw, None
+    # Fallback: longest window
+    longest = max(surplus_windows, key=_window_length_steps)
+    return None, longest

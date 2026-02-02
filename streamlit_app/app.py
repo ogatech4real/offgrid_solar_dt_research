@@ -536,6 +536,7 @@ if matching:
         st.metric("Energy margin", margin_label)
     with mcol4:
         st.markdown(f'<span class="pill {risk_cls}">Risk: {str(risk_val).title()}</span>', unsafe_allow_html=True)
+        st.caption("Day-ahead risk (overall tomorrow)")
 
     # 3) Comparative metrics and advisory text
     st.markdown(f'<div class="card"><p class="kpi">{_m(matching, "daily_outlook_text", "")}</p></div>', unsafe_allow_html=True)
@@ -627,6 +628,7 @@ dominant = grow.get("dominant_factors", {})
 gcol1, gcol2 = st.columns([3, 2])
 with gcol1:
     st.markdown(f"{_risk_pill(risk)}", unsafe_allow_html=True)
+    st.caption("**Step risk** — for this moment only. Day-ahead risk is in **Your 24h summary** above.")
     st.markdown(f"**{headline}**")
     st.write(explanation)
     if reason_codes:
@@ -721,6 +723,7 @@ else:
 
 # Schedule heatmap (log-driven; §2.2 Digital twin replay)
 st.markdown("### Recommended schedule (when to run what)")
+st.caption("From your plan run: when each load would be served. Compare with **Appliance advice for tomorrow** above (based on solar vs demand).")
 day_df2 = df.copy()
 day_df2["day"] = day_df2["ts"].dt.floor("D")
 days_unique = sorted(day_df2["day"].unique())
