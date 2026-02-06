@@ -522,6 +522,8 @@ if matching:
     solar_source = (res.get("solar_source") or "synthetic").lower()
     if solar_source == "nasa_power_historical":
         source_label = "NASA POWER (7-day mean)"
+    elif solar_source == "nasa_power_doy":
+        source_label = "NASA POWER (same period last year)"
     elif solar_source == "nasa_power":
         source_label = "NASA POWER"
     else:
@@ -561,6 +563,8 @@ if matching:
     st.caption(f"Solar data for this run: **{source_label}**.")
     if solar_source == "nasa_power_historical":
         st.caption("Expected solar: mean profile from last 7 days at your location (smoothed).")
+    elif solar_source == "nasa_power_doy":
+        st.caption("Expected solar: 7-day mean around same period last year at your location.")
 
     # 2) Summary: total expected solar, planned demand
     st.markdown("#### Your 24h summary")
@@ -778,7 +782,11 @@ with dcols[1]:
     st.download_button("Download guidance log (JSONL)", data=Path(guidance_jsonl).read_bytes(), file_name="guidance_log.jsonl", mime="application/jsonl", width="stretch")
 
 _solar_src = (res.get("solar_source") or "synthetic").lower()
-_solar_src_label = "NASA POWER (7-day mean)" if _solar_src == "nasa_power_historical" else ("NASA POWER" if _solar_src == "nasa_power" else "Synthetic (demo)")
+_solar_src_label = (
+    "NASA POWER (7-day mean)" if _solar_src == "nasa_power_historical"
+    else ("NASA POWER (same period last year)" if _solar_src == "nasa_power_doy"
+    else ("NASA POWER" if _solar_src == "nasa_power" else "Synthetic (demo)"))
+)
 system_summary_for_pdf = {
     "Location": str(st.session_state.get("location_name", "")) or "Configured location",
     "PV capacity": f"{float(st.session_state.get('pv_kw', 0)):.1f} kW",

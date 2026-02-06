@@ -11,7 +11,7 @@ it is not used for irradiance or PV estimates.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 import requests
@@ -210,6 +210,40 @@ def build_hourly_ghi_profile(points: List[IrradiancePoint]) -> Tuple[List[float]
 
 # Minimum plausible peak GHI (W/m²) for a valid historical profile; below this we treat as no data.
 _MIN_PEAK_GHI_WM2 = 5.0
+# Minimum spread (max - min) over 24h in W/m²; if GHI is constant over the day we treat as inconsistent/fill.
+_MIN_GHI_SPREAD_WM2 = 1.0
+
+
+def _is_valid_mean_profile(mean_24: List[float]) -> bool:
+    """True if the 24h mean profile has usable solar and diurnal variation (not all-zero or flat)."""
+    if not mean_24 or len(mean_24) != 24:
+        return False
+    sum_ghi = sum(mean_24)
+    max_ghi = max(mean_24)
+    min_ghi = min(mean_24)
+    spread = max_ghi - min_ghi
+    return (
+        sum_ghi > 0
+        and max_ghi >= _MIN_PEAK_GHI_WM2
+        and spread >= _MIN_GHI_SPREAD_WM2
+    )
+
+
+def _mean_profile_to_points(mean_24: List[float], nominal_day: date) -> List[IrradiancePoint]:
+    """Build 24 IrradiancePoint for hour 0..23 with given mean GHI and nominal day (UTC)."""
+    out: List[IrradiancePoint] = []
+    for h in range(24):
+        ts = datetime(
+            nominal_day.year,
+            nominal_day.month,
+            nominal_day.day,
+            h,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
+        out.append(IrradiancePoint(ts=ts, ghi_wm2=mean_24[h]))
+    return out
 
 
 def expected_ghi_profile_from_history(
@@ -246,14 +280,15 @@ def expected_ghi_profile_from_history(
         return []
     mean_24, _, _ = build_hourly_ghi_profile(points)
     max_ghi = max(mean_24) if mean_24 else 0.0
-    sum_ghi = sum(mean_24)
-    if sum_ghi == 0 or max_ghi < _MIN_PEAK_GHI_WM2:
+    spread = max_ghi - min(mean_24) if mean_24 else 0.0
+    if not _is_valid_mean_profile(mean_24):
         LOG.warning(
-            "NASA POWER historical window had no usable GHI (range %s–%s, %d points, max=%.1f W/m²); using synthetic.",
+            "NASA POWER historical window had no usable GHI (range %s–%s, %d points, max=%.1f W/m², spread=%.1f); using fallback.",
             start_date.isoformat(),
             end_date.isoformat(),
             len(points),
             max_ghi,
+            spread,
         )
         return []
     LOG.info(
@@ -264,16 +299,66 @@ def expected_ghi_profile_from_history(
         max_ghi,
     )
     nominal_day = reference_utc.date() + timedelta(days=1)
-    out: List[IrradiancePoint] = []
-    for h in range(24):
-        ts = datetime(
-            nominal_day.year,
-            nominal_day.month,
-            nominal_day.day,
-            h,
-            0,
-            0,
-            tzinfo=timezone.utc,
+    return _mean_profile_to_points(mean_24, nominal_day)
+
+
+def _same_day_last_year(ref_date: date) -> date:
+    """Same calendar day previous year; if ref_date is Feb 29 and last year is not leap, return Feb 28."""
+    try:
+        return ref_date.replace(year=ref_date.year - 1)
+    except ValueError:
+        return date(ref_date.year - 1, 2, 28)
+
+
+def expected_ghi_profile_from_doy(
+    lat: float,
+    lon: float,
+    reference_utc: Optional[datetime] = None,
+    half_window_days: int = 3,
+    time_standard: str = "UTC",
+    timeout_seconds: int = 30,
+) -> List[IrradiancePoint]:
+    """Build expected 24h GHI profile from same day-of-year last year (center ± half_window_days), 7-day mean.
+
+    Used as fallback when recent historical window has no usable data. Same validation as primary
+    (non-zero, plausible peak, diurnal spread). Returns 24 IrradiancePoint or [].
+    """
+    if reference_utc is None:
+        reference_utc = datetime.now(tz=timezone.utc)
+    if reference_utc.tzinfo is None:
+        reference_utc = reference_utc.replace(tzinfo=timezone.utc)
+    ref_date = reference_utc.date()
+    center = _same_day_last_year(ref_date)
+    start_date = center - timedelta(days=half_window_days)
+    end_date = center + timedelta(days=half_window_days)
+    start_dt = datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=timezone.utc)
+    end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+    try:
+        points = fetch_ghi_hourly(lat, lon, start_dt, end_dt, time_standard=time_standard, timeout_seconds=timeout_seconds)
+    except Exception as e:
+        LOG.warning("NASA POWER DOY fallback fetch failed (%s); using synthetic.", e)
+        return []
+    if not points:
+        return []
+    mean_24, _, _ = build_hourly_ghi_profile(points)
+    max_ghi = max(mean_24) if mean_24 else 0.0
+    spread = max_ghi - min(mean_24) if mean_24 else 0.0
+    if not _is_valid_mean_profile(mean_24):
+        LOG.warning(
+            "NASA POWER DOY window had no usable GHI (range %s–%s, %d points, max=%.1f W/m², spread=%.1f); using synthetic.",
+            start_date.isoformat(),
+            end_date.isoformat(),
+            len(points),
+            max_ghi,
+            spread,
         )
-        out.append(IrradiancePoint(ts=ts, ghi_wm2=mean_24[h]))
-    return out
+        return []
+    LOG.info(
+        "NASA POWER DOY fallback: range %s–%s, %d points, max(mean_24)=%.1f W/m²",
+        start_date.isoformat(),
+        end_date.isoformat(),
+        len(points),
+        max_ghi,
+    )
+    nominal_day = reference_utc.date() + timedelta(days=1)
+    return _mean_profile_to_points(mean_24, nominal_day)

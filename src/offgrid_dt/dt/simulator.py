@@ -11,7 +11,7 @@ import numpy as np
 from offgrid_dt.control.controllers import BaseController, ControllerInput
 from offgrid_dt.dt.battery import BatteryState, update_soc
 from offgrid_dt.dt.load import build_daily_tasks, requested_kw_for_step
-from offgrid_dt.forecast.nasa_power import expected_ghi_profile_from_history
+from offgrid_dt.forecast.nasa_power import expected_ghi_profile_from_doy, expected_ghi_profile_from_history
 from offgrid_dt.forecast.openweather import synthetic_irradiance_forecast
 from offgrid_dt.forecast.pv_power import irradiance_to_pv_power_kw
 from offgrid_dt.io.logger import RunLogger
@@ -85,9 +85,10 @@ def simulate(
         tzinfo=timezone.utc,
     )
 
-    # PV forecast: NASA POWER historical (7-day mean profile, lag 10 days for latency), synthetic fallback; track source for UI
+    # PV forecast: 3-tier fallback — primary (7-day mean, lag 10), DOY (same period last year), synthetic
     pv_forecast_kw_full: List[float] = []
     solar_source: str = "synthetic"
+    irr: Optional[List[Any]] = None
     try:
         irr = expected_ghi_profile_from_history(
             lat=cfg.latitude,
@@ -97,19 +98,29 @@ def simulate(
             lag_days=10,
         )
         if irr:
-            # Replicate 24h profile for each planning day
-            irr_multi = irr * days if days > 1 else irr
-            pv_forecast_kw_full = irradiance_to_pv_power_kw(irr_multi, cfg.pv_capacity_kw, cfg.pv_efficiency)
             solar_source = "nasa_power_historical"
-            log.info("Using NASA POWER historical GHI (7-day mean) for expected solar profile (%d points)", len(irr_multi))
     except Exception as e:
-        log.warning("NASA POWER historical fetch failed (%s); falling back to synthetic irradiance.", e)
-        irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
-        pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
-
+        log.warning("NASA POWER historical fetch failed (%s); trying DOY fallback.", e)
+    if not irr:
+        try:
+            irr = expected_ghi_profile_from_doy(
+                lat=cfg.latitude,
+                lon=cfg.longitude,
+                reference_utc=now_utc,
+                half_window_days=3,
+            )
+            if irr:
+                solar_source = "nasa_power_doy"
+        except Exception as e:
+            log.warning("NASA POWER DOY fallback failed (%s); using synthetic.", e)
+    if irr:
+        irr_multi = irr * days if days > 1 else irr
+        pv_forecast_kw_full = irradiance_to_pv_power_kw(irr_multi, cfg.pv_capacity_kw, cfg.pv_efficiency)
+        log.info("Using NASA POWER (%s) for expected solar profile (%d points)", solar_source, len(irr_multi))
     if not pv_forecast_kw_full:
         irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
         pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
+        solar_source = "synthetic"
 
     # Resample hourly (NASA) to simulator resolution (e.g. 15-min)
     pv_forecast_kw_full = _resample_to_steps(pv_forecast_kw_full, total_steps)
