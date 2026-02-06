@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import requests
 
@@ -150,3 +150,105 @@ def fetch_ghi_next_planning_days(
     end_date = datetime(last_planning_day.year, last_planning_day.month, last_planning_day.day, 23, 59, 59, tzinfo=timezone.utc)
 
     return fetch_ghi_hourly(lat, lon, start_dt, end_date, time_standard="UTC")
+
+
+def fetch_ghi_historical_window(
+    lat: float,
+    lon: float,
+    reference_utc: Optional[datetime] = None,
+    window_days: int = 7,
+    lag_days: int = 7,
+    time_standard: str = "UTC",
+    timeout_seconds: int = 30,
+) -> List[IrradiancePoint]:
+    """Fetch hourly GHI for a past window (behind NASA POWER solar latency).
+
+    Uses end_date = reference_utc - lag_days, start_date = end_date - (window_days - 1),
+    so all requested dates are in the past and within API availability.
+
+    Returns:
+        List of IrradiancePoint for each hour in the window (chronological).
+    """
+    if reference_utc is None:
+        reference_utc = datetime.now(tz=timezone.utc)
+    if reference_utc.tzinfo is None:
+        reference_utc = reference_utc.replace(tzinfo=timezone.utc)
+    end_date = reference_utc.date() - timedelta(days=lag_days)
+    start_date = end_date - timedelta(days=window_days - 1)
+    start_dt = datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=timezone.utc)
+    end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
+    return fetch_ghi_hourly(lat, lon, start_dt, end_dt, time_standard=time_standard)
+
+
+def build_hourly_ghi_profile(points: List[IrradiancePoint]) -> Tuple[List[float], List[float], List[float]]:
+    """Build hour-of-day mean, min, max from a list of hourly GHI points.
+
+    Returns:
+        (mean_24, min_24, max_24) — each a list of 24 floats for hour 0..23.
+        If an hour has no data, that hour is 0.0.
+    """
+    by_hour: List[List[float]] = [[] for _ in range(24)]
+    for p in points:
+        h = p.ts.hour
+        if 0 <= h < 24:
+            by_hour[h].append(float(p.ghi_wm2))
+    mean_24: List[float] = []
+    min_24: List[float] = []
+    max_24: List[float] = []
+    for h in range(24):
+        vals = by_hour[h]
+        if vals:
+            mean_24.append(sum(vals) / len(vals))
+            min_24.append(min(vals))
+            max_24.append(max(vals))
+        else:
+            mean_24.append(0.0)
+            min_24.append(0.0)
+            max_24.append(0.0)
+    return (mean_24, min_24, max_24)
+
+
+def expected_ghi_profile_from_history(
+    lat: float,
+    lon: float,
+    reference_utc: Optional[datetime] = None,
+    window_days: int = 7,
+    lag_days: int = 7,
+) -> List[IrradiancePoint]:
+    """Build expected 24h GHI profile (mean by hour-of-day) from recent historical window.
+
+    Fetches historical GHI, computes mean per hour 0..23, returns 24 IrradiancePoint
+    with nominal timestamps (next calendar day 00:00..23:00 UTC) for use by the
+    simulator. If fetch fails or returns no data, returns empty list.
+
+    Returns:
+        List of 24 IrradiancePoint (hour 0..23, mean GHI), or [].
+    """
+    if reference_utc is None:
+        reference_utc = datetime.now(tz=timezone.utc)
+    if reference_utc.tzinfo is None:
+        reference_utc = reference_utc.replace(tzinfo=timezone.utc)
+    points = fetch_ghi_historical_window(
+        lat=lat,
+        lon=lon,
+        reference_utc=reference_utc,
+        window_days=window_days,
+        lag_days=lag_days,
+    )
+    if not points:
+        return []
+    mean_24, _, _ = build_hourly_ghi_profile(points)
+    nominal_day = reference_utc.date() + timedelta(days=1)
+    out: List[IrradiancePoint] = []
+    for h in range(24):
+        ts = datetime(
+            nominal_day.year,
+            nominal_day.month,
+            nominal_day.day,
+            h,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
+        out.append(IrradiancePoint(ts=ts, ghi_wm2=mean_24[h]))
+    return out

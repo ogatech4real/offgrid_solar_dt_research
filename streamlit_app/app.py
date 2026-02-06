@@ -215,7 +215,7 @@ with st.sidebar:
 
     # Location: search -> geocode -> auto-fill
     st.subheader("Select Location")
-    loc_query = st.text_input("Search location", value=st.session_state.get("loc_query", ""))
+    loc_query = st.text_input("Search your location", value=st.session_state.get("loc_query", ""))
     st.session_state["loc_query"] = loc_query
 
     lat = st.session_state.get("latitude", 0.0)
@@ -520,7 +520,12 @@ if matching:
 
     # 1) Chart: Expected solar (PV power kW) over 24h; show data source on chart
     solar_source = (res.get("solar_source") or "synthetic").lower()
-    source_label = "NASA POWER" if solar_source == "nasa_power" else "Synthetic (demo)"
+    if solar_source == "nasa_power_historical":
+        source_label = "NASA POWER (last 7 days)"
+    elif solar_source == "nasa_power":
+        source_label = "NASA POWER"
+    else:
+        source_label = "Synthetic (demo)"
     steps_24h = int(24 * 60 / DT_MINUTES_DEFAULT)
     df_day = df.head(steps_24h)
     pv_kw_24h = df_day["pv_now_kw"].to_numpy(dtype=float)
@@ -554,6 +559,8 @@ if matching:
     )
     st.plotly_chart(fig_solar, use_container_width=True)
     st.caption(f"Solar data for this run: **{source_label}**.")
+    if solar_source == "nasa_power_historical":
+        st.caption("Expected profile from recent 7 days at your location.")
 
     # 2) Summary: total expected solar, planned demand
     st.markdown("#### Your 24h summary")
@@ -770,12 +777,14 @@ with dcols[0]:
 with dcols[1]:
     st.download_button("Download guidance log (JSONL)", data=Path(guidance_jsonl).read_bytes(), file_name="guidance_log.jsonl", mime="application/jsonl", width="stretch")
 
+_solar_src = (res.get("solar_source") or "synthetic").lower()
+_solar_src_label = "NASA POWER (last 7 days)" if _solar_src == "nasa_power_historical" else ("NASA POWER" if _solar_src == "nasa_power" else "Synthetic (demo)")
 system_summary_for_pdf = {
     "Location": str(st.session_state.get("location_name", "")) or "Configured location",
     "PV capacity": f"{float(st.session_state.get('pv_kw', 0)):.1f} kW",
     "Battery": f"{float(st.session_state.get('bat_kwh', 0)):.1f} kWh",
     "Inverter limit": f"{float(st.session_state.get('inv_kw', 0)):.1f} kW",
-    "Solar source": "NASA POWER (day-ahead GHI)",
+    "Solar source": _solar_src_label,
 }
 weather_summary = st.session_state.get("current_weather") or {}
 # Pass matching as dict so PDF builder gets a serializable format (avoids TypeError on Cloud/serialization)
