@@ -102,6 +102,9 @@ def _inject_css() -> None:
           }
           .load-circuit { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(194, 65, 12, 0.08); }
           .load-total { font-size: 1.1rem; font-weight: 700; color: var(--accent-solar); margin-top: 8px; }
+          /* Compact expanders (load groups) */
+          [data-testid="stExpander"] details summary { padding: 0.35rem 0; }
+          [data-testid="stExpander"] div[style*="overflow"] { padding-top: 0.2rem; padding-bottom: 0.2rem; }
           /* Section headings: warmer */
           h1, h2, h3 { font-family: 'Plus Jakarta Sans', sans-serif !important; color: var(--text-soft) !important; }
           /* Metric and caption text */
@@ -310,7 +313,7 @@ if weather:
 else:
     st.caption("Set your location in the sidebar and add an OpenWeather API key in secrets to see the weather here.")
 
-# ---------------------------- Main: Load (distribution board) — three columns ----------------------------
+# ---------------------------- Main: Load (distribution board) — three columns, expanders, compact rows ----------------------------
 st.markdown("### Your loads")
 st.caption("Turn loads on or off to match your household. Your total load updates as you select — this is advisory only; nothing is switched automatically.")
 catalog = appliance_catalog()
@@ -324,19 +327,25 @@ load_cols = st.columns(3)
 for idx, (cat_label, cat_key) in enumerate([("Critical loads", "critical"), ("Flexible loads", "flexible"), ("Deferrable loads", "deferrable")]):
     items = [a for a in catalog if a.category == cat_key]
     with load_cols[idx]:
-        st.markdown(f"**{cat_label}**")
-        for a in items:
-            on = st.toggle("ON", value=st.session_state.get(f"load_on_{a.id}", a.category == "critical"), key=f"load_on_{a.id}", label_visibility="collapsed")
-            st.markdown(f"{a.name} — {int(a.power_w):,} W")
-            qty = st.number_input("Qty", min_value=1, max_value=10, value=int(st.session_state.get(f"qty_{a.id}", 1)), key=f"qty_{a.id}", label_visibility="collapsed")
-            if on:
-                circuit_w = float(a.power_w) * qty
-                total_load_w += circuit_w
-                selected_names.append(a.name)
-                qty_map[a.id] = qty
-                st.caption(f"{circuit_w/1000:.2f} kW")
-            else:
-                st.caption("—")
+        expanded = (cat_key == "critical")  # Critical open by default; others collapsed to save space
+        with st.expander(f"**{cat_label}**", expanded=expanded):
+            for a in items:
+                r1, r2, r3, r4 = st.columns([0.6, 2, 0.8, 0.8])  # compact: toggle | name + W | qty | kW
+                with r1:
+                    on = st.toggle("ON", value=st.session_state.get(f"load_on_{a.id}", a.category == "critical"), key=f"load_on_{a.id}", label_visibility="collapsed")
+                with r2:
+                    st.markdown(f"{a.name} — {int(a.power_w):,} W")
+                with r3:
+                    qty = st.number_input("Qty", min_value=1, max_value=10, value=int(st.session_state.get(f"qty_{a.id}", 1)), key=f"qty_{a.id}", label_visibility="collapsed")
+                with r4:
+                    if on:
+                        circuit_w = float(a.power_w) * qty
+                        total_load_w += circuit_w
+                        selected_names.append(a.name)
+                        qty_map[a.id] = qty
+                        st.caption(f"{circuit_w/1000:.2f} kW")
+                    else:
+                        st.caption("—")
 
 total_load_kw = total_load_w / 1000.0
 st.markdown(f'<div class="load-board"><span class="load-total">Your total load: **{total_load_kw:.2f} kW**</span></div>', unsafe_allow_html=True)
