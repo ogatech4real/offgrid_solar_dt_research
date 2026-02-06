@@ -11,7 +11,7 @@ import numpy as np
 from offgrid_dt.control.controllers import BaseController, ControllerInput
 from offgrid_dt.dt.battery import BatteryState, update_soc
 from offgrid_dt.dt.load import build_daily_tasks, requested_kw_for_step
-from offgrid_dt.forecast.nasa_power import expected_ghi_profile_doy_last_year, expected_ghi_profile_yesterday
+from offgrid_dt.forecast.nasa_power import get_expected_ghi_next_24h
 from offgrid_dt.forecast.openweather import synthetic_irradiance_forecast
 from offgrid_dt.forecast.pv_power import irradiance_to_pv_power_kw
 from offgrid_dt.io.logger import RunLogger
@@ -85,36 +85,21 @@ def simulate(
         tzinfo=timezone.utc,
     )
 
-    # PV forecast: primary DOY±3 last year, fallback yesterday, final synthetic
+    # PV forecast: get_expected_ghi_next_24h tries DOY±3 last year, then yesterday, then returns synthetic
     pv_forecast_kw_full: List[float] = []
     solar_source: str = "synthetic"
-    irr: Optional[List[Any]] = None
     try:
-        irr = expected_ghi_profile_doy_last_year(
+        irr, solar_source = get_expected_ghi_next_24h(
             lat=cfg.latitude,
             lon=cfg.longitude,
             reference_utc=now_utc,
-            doy_window=3,
         )
         if irr:
-            solar_source = "nasa_power_doy"
+            irr_multi = irr * days if days > 1 else irr
+            pv_forecast_kw_full = irradiance_to_pv_power_kw(irr_multi, cfg.pv_capacity_kw, cfg.pv_efficiency)
+            log.info("Solar source: %s (%d points)", solar_source, len(irr_multi))
     except Exception as e:
-        log.warning("NASA POWER DOY±3 last year failed (%s); trying yesterday.", e)
-    if not irr:
-        try:
-            irr = expected_ghi_profile_yesterday(
-                lat=cfg.latitude,
-                lon=cfg.longitude,
-                reference_utc=now_utc,
-            )
-            if irr:
-                solar_source = "nasa_power_yesterday"
-        except Exception as e:
-            log.warning("NASA POWER yesterday failed (%s); using synthetic.", e)
-    if irr:
-        irr_multi = irr * days if days > 1 else irr
-        pv_forecast_kw_full = irradiance_to_pv_power_kw(irr_multi, cfg.pv_capacity_kw, cfg.pv_efficiency)
-        log.info("Solar source: %s (%d points)", solar_source, len(irr_multi))
+        log.warning("NASA POWER GHI failed (%s); using synthetic.", e)
     if not pv_forecast_kw_full:
         irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
         pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)

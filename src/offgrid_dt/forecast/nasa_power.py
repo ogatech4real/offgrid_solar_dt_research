@@ -11,6 +11,7 @@ it is not used for irradiance or PV estimates.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple, Union
 
@@ -22,6 +23,10 @@ LOG = logging.getLogger("offgrid_dt")
 
 NASA_POWER_BASE = "https://power.larc.nasa.gov/api/temporal/hourly/point"
 PARAM_GHI = "ALLSKY_SFC_SW_DWN"  # All-sky surface shortwave downward irradiance (W/m² or Wh/m² per hour)
+
+
+def _fmt_yyyymmdd(d: date) -> str:
+    return d.strftime("%Y%m%d")
 
 
 def fetch_ghi_hourly(
@@ -116,34 +121,34 @@ def _parse_nasa_power_ghi(data: dict) -> List[IrradiancePoint]:
     return points
 
 
-def _parse_nasa_power_ghi_valid_only(data: dict) -> List[IrradiancePoint]:
-    """Parse NASA POWER JSON; include only hours with valid GHI (exclude -999 and any negative as missing)."""
-    points: List[IrradiancePoint] = []
+def _parse_nasa_power_ghi_valid_only(payload: dict) -> List[IrradiancePoint]:
+    """Parse NASA POWER JSON; include only hours with valid GHI. Exclude -999 and any negative as missing."""
     try:
-        params = (data.get("properties") or {}).get("parameter") or {}
-        ghi_data = params.get(PARAM_GHI)
-        if not ghi_data or not isinstance(ghi_data, dict):
-            return points
-        for key in sorted(ghi_data.keys()):
-            try:
-                if len(key) != 10:
-                    continue
-                year = int(key[0:4])
-                month = int(key[4:6])
-                day = int(key[6:8])
-                hour = int(key[8:10])
-                ts = datetime(year, month, day, hour, 0, 0, tzinfo=timezone.utc)
-                val = ghi_data[key]
-                if val is None:
-                    continue
-                ghi = float(val)
-                if ghi < 0:
-                    continue
-                points.append(IrradiancePoint(ts=ts, ghi_wm2=ghi))
-            except (ValueError, TypeError, IndexError):
-                continue
-    except Exception as e:
-        LOG.warning("Failed to parse NASA POWER response: %s", e)
+        data = payload["properties"]["parameter"][PARAM_GHI]
+    except KeyError:
+        return []
+    points: List[IrradiancePoint] = []
+    for key, val in data.items():
+        if len(key) != 10:
+            continue
+        try:
+            yyyy = int(key[0:4])
+            mm = int(key[4:6])
+            dd = int(key[6:8])
+            hh = int(key[8:10])
+            ts = datetime(yyyy, mm, dd, hh, 0, 0, tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if val is None:
+            continue
+        try:
+            fval = float(val)
+        except (TypeError, ValueError):
+            continue
+        if fval < 0 or math.isclose(fval, -999.0, abs_tol=1e-9):
+            continue
+        points.append(IrradiancePoint(ts=ts, ghi_wm2=fval))
+    points.sort(key=lambda p: p.ts)
     return points
 
 
@@ -152,42 +157,31 @@ def fetch_nasa_power_hourly_ghi(
     lon: float,
     start_date: Union[date, datetime],
     end_date: Union[date, datetime],
+    session: Optional[requests.Session] = None,
     time_standard: str = "UTC",
-    timeout_seconds: int = 30,
+    timeout_seconds: int = 20,
 ) -> List[IrradiancePoint]:
-    """Fetch hourly GHI from NASA POWER for the given date range; return only valid samples (no fill).
+    """Fetch hourly GHI from NASA POWER for [start_date, end_date] UTC; return only valid samples (no fill).
 
-    -999 and any negative values are treated as missing and excluded from the result.
-    Returns list of (ts_utc, ghi) as IrradiancePoint for each hour with valid data.
+    -999 and any negative values are treated as missing and excluded. Uses optional Session for connection reuse.
     """
-    if isinstance(start_date, date) and not isinstance(start_date, datetime):
-        start_dt = datetime(start_date.year, start_date.month, start_date.day, 0, 0, 0, tzinfo=timezone.utc)
-    else:
-        start_dt = start_date
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=timezone.utc)
-    if isinstance(end_date, date) and not isinstance(end_date, datetime):
-        end_dt = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59, tzinfo=timezone.utc)
-    else:
-        end_dt = end_date
-        if end_dt.tzinfo is None:
-            end_dt = end_dt.replace(tzinfo=timezone.utc)
-    start_str = start_dt.strftime("%Y%m%d")
-    end_str = end_dt.strftime("%Y%m%d")
+    start_d = start_date if isinstance(start_date, date) else start_date.date()
+    end_d = end_date if isinstance(end_date, date) else end_date.date()
     params = {
         "parameters": PARAM_GHI,
         "community": "RE",
         "longitude": lon,
         "latitude": lat,
-        "start": start_str,
-        "end": end_str,
+        "start": _fmt_yyyymmdd(start_d),
+        "end": _fmt_yyyymmdd(end_d),
         "format": "JSON",
         "time-standard": time_standard,
     }
-    r = requests.get(NASA_POWER_BASE, params=params, timeout=timeout_seconds)
+    s = session or requests.Session()
+    r = s.get(NASA_POWER_BASE, params=params, timeout=timeout_seconds)
     r.raise_for_status()
-    data = r.json()
-    return _parse_nasa_power_ghi_valid_only(data)
+    payload = r.json()
+    return _parse_nasa_power_ghi_valid_only(payload)
 
 
 def build_hourly_profile_mean(points: List[IrradiancePoint]) -> List[float]:
@@ -200,23 +194,14 @@ def build_hourly_profile_mean(points: List[IrradiancePoint]) -> List[float]:
     return [sum(vals) / len(vals) if vals else 0.0 for vals in by_hour]
 
 
-# Plausibility thresholds for expected GHI profile (do not label invalid as NASA-based).
-_MIN_PEAK_GHI_WM2_EXPECTED = 5.0
-_MIN_GHI_SPREAD_WM2_EXPECTED = 1.0
-
-
-def _is_valid_expected_profile(profile_24: List[float]) -> bool:
-    """True if profile has usable solar: max >= 5 W/m², sum > 0, and diurnal spread (not flat)."""
+# Plausibility: do not label invalid/empty profiles as NASA-based.
+def profile_is_plausible(profile_24: List[float], eps_peak: float = 5.0) -> bool:
+    """True if profile has usable solar: max >= eps_peak W/m² and sum > 0 (matches reference logic)."""
     if not profile_24 or len(profile_24) != 24:
         return False
-    s = sum(profile_24)
     mx = max(profile_24)
-    mn = min(profile_24)
-    return (
-        s > 0
-        and mx >= _MIN_PEAK_GHI_WM2_EXPECTED
-        and (mx - mn) >= _MIN_GHI_SPREAD_WM2_EXPECTED
-    )
+    sm = sum(profile_24)
+    return (mx >= eps_peak) and (sm > 0.0)
 
 
 def expected_ghi_profile_doy_last_year(
@@ -224,26 +209,26 @@ def expected_ghi_profile_doy_last_year(
     lon: float,
     reference_utc: Optional[datetime] = None,
     doy_window: int = 3,
+    session: Optional[requests.Session] = None,
     time_standard: str = "UTC",
-    timeout_seconds: int = 30,
+    timeout_seconds: int = 20,
 ) -> List[IrradiancePoint]:
     """Primary: expected 24h GHI from same day last year with DOY ± doy_window days (7-day mean).
 
     target_date = (today_utc - 365 days).date(); window = target_date ± doy_window.
     Fill values (-999 / negative) are excluded; build mean per hour 0..23. Returns 24 points or [].
     """
-    if reference_utc is None:
-        reference_utc = datetime.now(tz=timezone.utc)
-    if reference_utc.tzinfo is None:
-        reference_utc = reference_utc.replace(tzinfo=timezone.utc)
-    today = reference_utc.date()
+    now = reference_utc or datetime.now(tz=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    today = now.date()
     target_date = today - timedelta(days=365)
     start_date = target_date - timedelta(days=doy_window)
     end_date = target_date + timedelta(days=doy_window)
     try:
         points = fetch_nasa_power_hourly_ghi(
             lat, lon, start_date, end_date,
-            time_standard=time_standard, timeout_seconds=timeout_seconds,
+            session=session, time_standard=time_standard, timeout_seconds=timeout_seconds,
         )
     except Exception as e:
         LOG.warning("NASA POWER DOY fetch failed (%s); trying fallback.", e)
@@ -251,7 +236,7 @@ def expected_ghi_profile_doy_last_year(
     if not points:
         return []
     profile_24 = build_hourly_profile_mean(points)
-    if not _is_valid_expected_profile(profile_24):
+    if not profile_is_plausible(profile_24):
         LOG.warning(
             "NASA POWER DOY±%d last year invalid (range %s–%s, %d points, max=%.1f); using fallback.",
             doy_window, start_date.isoformat(), end_date.isoformat(), len(points), max(profile_24),
@@ -270,21 +255,19 @@ def expected_ghi_profile_yesterday(
     lat: float,
     lon: float,
     reference_utc: Optional[datetime] = None,
+    session: Optional[requests.Session] = None,
     time_standard: str = "UTC",
-    timeout_seconds: int = 30,
+    timeout_seconds: int = 20,
 ) -> List[IrradiancePoint]:
-    """Fallback: expected 24h GHI from yesterday 00–24 UTC. Uses that day's data directly or mean profile."""
-    if reference_utc is None:
-        reference_utc = datetime.now(tz=timezone.utc)
-    if reference_utc.tzinfo is None:
-        reference_utc = reference_utc.replace(tzinfo=timezone.utc)
-    yesterday = reference_utc.date() - timedelta(days=1)
-    start_dt = datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0, tzinfo=timezone.utc)
-    end_dt = datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59, tzinfo=timezone.utc)
+    """Fallback: expected 24h GHI from yesterday 00–24 UTC (hour-matched profile)."""
+    now = reference_utc or datetime.now(tz=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    yesterday = now.date() - timedelta(days=1)
     try:
         points = fetch_nasa_power_hourly_ghi(
-            lat, lon, start_dt, end_dt,
-            time_standard=time_standard, timeout_seconds=timeout_seconds,
+            lat, lon, yesterday, yesterday,
+            session=session, time_standard=time_standard, timeout_seconds=timeout_seconds,
         )
     except Exception as e:
         LOG.warning("NASA POWER yesterday fetch failed (%s); using synthetic.", e)
@@ -292,19 +275,42 @@ def expected_ghi_profile_yesterday(
     if not points:
         return []
     profile_24 = build_hourly_profile_mean(points)
-    if not _is_valid_expected_profile(profile_24):
+    if not profile_is_plausible(profile_24):
         LOG.warning(
             "NASA POWER yesterday invalid (date %s, %d points, max=%.1f); using synthetic.",
             yesterday.isoformat(), len(points), max(profile_24),
         )
         return []
-    nominal_day = reference_utc.date() + timedelta(days=1)
+    nominal_day = now.date() + timedelta(days=1)
     out = _mean_profile_to_points(profile_24, nominal_day)
     LOG.info(
         "Solar source: NASA POWER (yesterday), date %s, %d valid points.",
         yesterday.isoformat(), len(points),
     )
     return out
+
+
+def get_expected_ghi_next_24h(
+    lat: float,
+    lon: float,
+    reference_utc: Optional[datetime] = None,
+) -> Tuple[List[IrradiancePoint], str]:
+    """Choose expected 24h GHI: 1) DOY±3 last year, 2) yesterday, 3) synthetic (caller provides).
+
+    Returns (points, source_label). source_label is 'nasa_power_doy' | 'nasa_power_yesterday' | 'synthetic'.
+    Uses a single Session for both NASA attempts.
+    """
+    now = reference_utc or datetime.now(tz=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    session = requests.Session()
+    pts = expected_ghi_profile_doy_last_year(lat, lon, now, doy_window=3, session=session)
+    if pts:
+        return pts, "nasa_power_doy"
+    pts = expected_ghi_profile_yesterday(lat, lon, now, session=session)
+    if pts:
+        return pts, "nasa_power_yesterday"
+    return [], "synthetic"
 
 
 def fetch_ghi_next_planning_days(
