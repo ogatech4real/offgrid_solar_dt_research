@@ -310,7 +310,7 @@ if weather:
 else:
     st.caption("Set your location in the sidebar and add an OpenWeather API key in secrets to see the weather here.")
 
-# ---------------------------- Main: Load (distribution board) ----------------------------
+# ---------------------------- Main: Load (distribution board) — three columns ----------------------------
 st.markdown("### Your loads")
 st.caption("Turn loads on or off to match your household. Your total load updates as you select — this is advisory only; nothing is switched automatically.")
 catalog = appliance_catalog()
@@ -320,29 +320,23 @@ total_load_w = 0.0
 selected_names = []
 qty_map = {}
 
-# Build in two rows: Critical | Flexible | Deferrable | EV/Others
-for cat_label, cat_key in [("Critical", "critical"), ("Flexible", "flexible"), ("Deferrable", "deferrable")]:
+load_cols = st.columns(3)
+for idx, (cat_label, cat_key) in enumerate([("Critical loads", "critical"), ("Flexible loads", "flexible"), ("Deferrable loads", "deferrable")]):
     items = [a for a in catalog if a.category == cat_key]
-    if not items:
-        continue
-    with st.expander(f"{cat_label} loads", expanded=(cat_key == "critical")):
+    with load_cols[idx]:
+        st.markdown(f"**{cat_label}**")
         for a in items:
-            cols = st.columns([1, 2, 1, 1])
-            with cols[0]:
-                on = st.toggle("ON", value=st.session_state.get(f"load_on_{a.id}", a.category == "critical"), key=f"load_on_{a.id}", label_visibility="collapsed")
-            with cols[1]:
-                st.markdown(f"**{a.name}** — {int(a.power_w):,} W")
-            with cols[2]:
-                qty = st.number_input("Qty", min_value=1, max_value=10, value=int(st.session_state.get(f"qty_{a.id}", 1)), key=f"qty_{a.id}", label_visibility="collapsed")
-            with cols[3]:
-                if on:
-                    circuit_w = float(a.power_w) * qty
-                    total_load_w += circuit_w
-                    selected_names.append(a.name)
-                    qty_map[a.id] = qty
-                    st.metric("", f"{circuit_w/1000:.2f} kW")
-                else:
-                    st.caption("—")
+            on = st.toggle("ON", value=st.session_state.get(f"load_on_{a.id}", a.category == "critical"), key=f"load_on_{a.id}", label_visibility="collapsed")
+            st.markdown(f"{a.name} — {int(a.power_w):,} W")
+            qty = st.number_input("Qty", min_value=1, max_value=10, value=int(st.session_state.get(f"qty_{a.id}", 1)), key=f"qty_{a.id}", label_visibility="collapsed")
+            if on:
+                circuit_w = float(a.power_w) * qty
+                total_load_w += circuit_w
+                selected_names.append(a.name)
+                qty_map[a.id] = qty
+                st.caption(f"{circuit_w/1000:.2f} kW")
+            else:
+                st.caption("—")
 
 total_load_kw = total_load_w / 1000.0
 st.markdown(f'<div class="load-board"><span class="load-total">Your total load: **{total_load_kw:.2f} kW**</span></div>', unsafe_allow_html=True)
