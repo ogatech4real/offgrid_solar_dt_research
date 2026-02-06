@@ -157,7 +157,7 @@ def fetch_ghi_historical_window(
     lon: float,
     reference_utc: Optional[datetime] = None,
     window_days: int = 7,
-    lag_days: int = 7,
+    lag_days: int = 10,
     time_standard: str = "UTC",
     timeout_seconds: int = 30,
 ) -> List[IrradiancePoint]:
@@ -208,18 +208,23 @@ def build_hourly_ghi_profile(points: List[IrradiancePoint]) -> Tuple[List[float]
     return (mean_24, min_24, max_24)
 
 
+# Minimum plausible peak GHI (W/m²) for a valid historical profile; below this we treat as no data.
+_MIN_PEAK_GHI_WM2 = 5.0
+
+
 def expected_ghi_profile_from_history(
     lat: float,
     lon: float,
     reference_utc: Optional[datetime] = None,
     window_days: int = 7,
-    lag_days: int = 7,
+    lag_days: int = 10,
 ) -> List[IrradiancePoint]:
     """Build expected 24h GHI profile (mean by hour-of-day) from recent historical window.
 
     Fetches historical GHI, computes mean per hour 0..23, returns 24 IrradiancePoint
     with nominal timestamps (next calendar day 00:00..23:00 UTC) for use by the
-    simulator. If fetch fails or returns no data, returns empty list.
+    simulator. If fetch fails, returns no data, or profile is invalid (all-zero),
+    returns empty list.
 
     Returns:
         List of 24 IrradiancePoint (hour 0..23, mean GHI), or [].
@@ -228,6 +233,8 @@ def expected_ghi_profile_from_history(
         reference_utc = datetime.now(tz=timezone.utc)
     if reference_utc.tzinfo is None:
         reference_utc = reference_utc.replace(tzinfo=timezone.utc)
+    end_date = reference_utc.date() - timedelta(days=lag_days)
+    start_date = end_date - timedelta(days=window_days - 1)
     points = fetch_ghi_historical_window(
         lat=lat,
         lon=lon,
@@ -238,6 +245,24 @@ def expected_ghi_profile_from_history(
     if not points:
         return []
     mean_24, _, _ = build_hourly_ghi_profile(points)
+    max_ghi = max(mean_24) if mean_24 else 0.0
+    sum_ghi = sum(mean_24)
+    if sum_ghi == 0 or max_ghi < _MIN_PEAK_GHI_WM2:
+        LOG.warning(
+            "NASA POWER historical window had no usable GHI (range %s–%s, %d points, max=%.1f W/m²); using synthetic.",
+            start_date.isoformat(),
+            end_date.isoformat(),
+            len(points),
+            max_ghi,
+        )
+        return []
+    LOG.info(
+        "NASA POWER historical GHI: range %s–%s, %d points, max(mean_24)=%.1f W/m²",
+        start_date.isoformat(),
+        end_date.isoformat(),
+        len(points),
+        max_ghi,
+    )
     nominal_day = reference_utc.date() + timedelta(days=1)
     out: List[IrradiancePoint] = []
     for h in range(24):

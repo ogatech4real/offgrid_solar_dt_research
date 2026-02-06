@@ -85,7 +85,7 @@ def simulate(
         tzinfo=timezone.utc,
     )
 
-    # PV forecast: NASA POWER historical (mean profile from last 7 days), synthetic fallback; track source for UI
+    # PV forecast: NASA POWER historical (7-day mean profile, lag 10 days for latency), synthetic fallback; track source for UI
     pv_forecast_kw_full: List[float] = []
     solar_source: str = "synthetic"
     try:
@@ -94,14 +94,14 @@ def simulate(
             lon=cfg.longitude,
             reference_utc=now_utc,
             window_days=7,
-            lag_days=7,
+            lag_days=10,
         )
         if irr:
             # Replicate 24h profile for each planning day
             irr_multi = irr * days if days > 1 else irr
             pv_forecast_kw_full = irradiance_to_pv_power_kw(irr_multi, cfg.pv_capacity_kw, cfg.pv_efficiency)
             solar_source = "nasa_power_historical"
-            log.info("Using NASA POWER historical GHI (last 7 days) for expected solar profile (%d points)", len(irr_multi))
+            log.info("Using NASA POWER historical GHI (7-day mean) for expected solar profile (%d points)", len(irr_multi))
     except Exception as e:
         log.warning("NASA POWER historical fetch failed (%s); falling back to synthetic irradiance.", e)
         irr = synthetic_irradiance_forecast(start=start, hours=24 * days, step_minutes=dt_minutes)
