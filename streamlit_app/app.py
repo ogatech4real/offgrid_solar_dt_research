@@ -210,11 +210,11 @@ client = get_openweather_client()
 
 # ---------------------------- Sidebar: smart configuration ----------------------------
 with st.sidebar:
-    st.header("Your setup")
+    st.header("System Setup")
     st.caption("Set your system once — we'll generate your daily plan automatically.")
 
     # Location: search -> geocode -> auto-fill
-    st.subheader("Location")
+    st.subheader("Select Location")
     loc_query = st.text_input("Search location", value=st.session_state.get("loc_query", ""))
     st.session_state["loc_query"] = loc_query
 
@@ -253,7 +253,8 @@ with st.sidebar:
         st.session_state["location_name"] = loc_label
 
     # System capacity
-    st.subheader("Solar + Battery")
+    st.subheader("Solar + Battery config")
+    st.caption("Set your system configuration.")
     pv_kw = st.number_input("PV capacity (kW)", min_value=0.5, max_value=30.0, value=float(st.session_state.get("pv_kw", 3.0)), step=0.1)
     bat_kwh = st.number_input("Battery capacity (kWh)", min_value=0.5, max_value=50.0, value=float(st.session_state.get("bat_kwh", 5.0)), step=0.1)
     inv_kw = st.number_input("Inverter max (kW)", min_value=0.3, max_value=30.0, value=float(st.session_state.get("inv_kw", 2.5)), step=0.1)
@@ -517,15 +518,42 @@ if matching:
     risk_matching = str(risk_val).lower()
     risk_cls = {"low": "low", "medium": "med", "high": "high"}.get(risk_matching, "")
 
-    # 1) Chart: Expected solar (PV power kW) over 24h at 15-min from NASA POWER–derived run
+    # 1) Chart: Expected solar (PV power kW) over 24h; show data source on chart
+    solar_source = (res.get("solar_source") or "synthetic").lower()
+    source_label = "NASA POWER" if solar_source == "nasa_power" else "Synthetic (demo)"
     steps_24h = int(24 * 60 / DT_MINUTES_DEFAULT)
     df_day = df.head(steps_24h)
     pv_kw_24h = df_day["pv_now_kw"].to_numpy(dtype=float)
     ts_24h = pd.to_datetime(df_day["ts"])
     fig_solar = go.Figure()
     fig_solar.add_trace(go.Scatter(x=ts_24h, y=pv_kw_24h, mode="lines", line_shape="spline", name="Expected PV power (kW)", line=dict(color="#0ea5e9")))
-    fig_solar.update_layout(title="Expected solar over the next 24 hours", height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="kW", font=dict(family="Plus Jakarta Sans, sans-serif"))
+    fig_solar.update_layout(
+        title="Expected solar over the next 24 hours",
+        height=300,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis_title="Time (UTC)",
+        yaxis_title="kW",
+        font=dict(family="Plus Jakarta Sans, sans-serif"),
+        annotations=[
+            dict(
+                x=1,
+                y=1,
+                xref="paper",
+                yref="paper",
+                text=f"Source: {source_label}",
+                showarrow=False,
+                xanchor="right",
+                yanchor="top",
+                font=dict(size=11),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor="rgba(0,0,0,0.1)",
+                borderwidth=1,
+                borderpad=6,
+            )
+        ],
+    )
     st.plotly_chart(fig_solar, use_container_width=True)
+    st.caption(f"Solar data for this run: **{source_label}**.")
 
     # 2) Summary: total expected solar, planned demand
     st.markdown("#### Your 24h summary")

@@ -85,8 +85,9 @@ def simulate(
         tzinfo=timezone.utc,
     )
 
-    # PV forecast: NASA POWER (primary), synthetic fallback
+    # PV forecast: NASA POWER (primary), synthetic fallback; track source for UI
     pv_forecast_kw_full: List[float] = []
+    solar_source: str = "synthetic"
     try:
         irr = fetch_ghi_next_planning_days(
             lat=cfg.latitude,
@@ -96,6 +97,7 @@ def simulate(
         )
         if irr:
             pv_forecast_kw_full = irradiance_to_pv_power_kw(irr, cfg.pv_capacity_kw, cfg.pv_efficiency)
+            solar_source = "nasa_power"
             log.info("Using NASA POWER GHI for day-ahead PV forecast (%d points)", len(irr))
     except Exception as e:
         log.warning("NASA POWER fetch failed (%s); falling back to synthetic irradiance.", e)
@@ -258,6 +260,7 @@ def simulate(
     out = logger.flush(prefix=prefix)
     if out:
         out["start_time"] = start.isoformat()
+        out["solar_source"] = solar_source
         # Day-ahead matching: compare expected demand vs solar for first planning day
         try:
             import pandas as pd
