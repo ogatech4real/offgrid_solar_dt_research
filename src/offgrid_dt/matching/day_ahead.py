@@ -18,6 +18,7 @@ import pandas as pd
 
 from offgrid_dt.dt.load import compute_planned_daily_energy_kwh
 from offgrid_dt.io.schema import Appliance, SystemConfig
+from offgrid_dt.planning.nominal_plan import compute_nominal_planned_energy
 
 # Advisory status per appliance (traceable to surplus/deficit and priority)
 ApplianceStatus = Literal["safe_to_run", "run_only_in_recommended_window", "avoid_today"]
@@ -49,12 +50,14 @@ class ApplianceAdvisory:
 @dataclass
 class DayAheadMatchingResult:
     """Result of day-ahead demand vs solar matching (first planning day 00:00–24:00)."""
-    # Daily energy feasibility
+    # Daily energy feasibility (total_demand_kwh = nominal planned energy, single source of truth)
     total_solar_kwh: float
     total_demand_kwh: float
     energy_margin_kwh: float
     energy_margin_type: EnergyMarginType
     daily_outlook_text: str
+    # Simulation-based load: from actual task durations/windows (do not use for margin or "Planned demand")
+    simulation_based_load_24h_kwh: float = 0.0
 
     # Time-resolved power adequacy
     surplus_windows: List[TimeWindow] = field(default_factory=list)
@@ -100,6 +103,7 @@ class DayAheadMatchingResult:
             "energy_margin_kwh": self.energy_margin_kwh,
             "energy_margin_type": self.energy_margin_type,
             "daily_outlook_text": self.daily_outlook_text,
+            "simulation_based_load_24h_kwh": self.simulation_based_load_24h_kwh,
             "surplus_windows": [_tw_dict(tw) for tw in self.surplus_windows],
             "deficit_windows": [_tw_dict(tw) for tw in self.deficit_windows],
             "min_power_margin_kw": self.min_power_margin_kw,
@@ -185,9 +189,11 @@ def compute_day_ahead_matching(
     load_kw = day_df["load_requested_kw"].fillna(0.0).to_numpy(dtype=float)
     crit_kw = day_df["crit_requested_kw"].fillna(0.0).to_numpy(dtype=float)
 
-    # 1) Daily energy feasibility: planned demand from config (power×duration once), not sum(load_requested_kw)*dt
+    # 1) Daily energy feasibility: nominal planned demand (single source of truth) and simulation-based load (separate metric)
     total_solar_kwh = float(pv_kw.sum()) * dt_hours
-    total_demand_kwh = compute_planned_daily_energy_kwh(appliances, steps_per_day, dt_hours)
+    nominal = compute_nominal_planned_energy(appliances, include_12h=False)
+    total_demand_kwh = nominal.E_plan_24h_kwh
+    simulation_based_load_24h_kwh = compute_planned_daily_energy_kwh(appliances, steps_per_day, dt_hours)
     energy_margin_kwh = total_solar_kwh - total_demand_kwh
 
     # Margin type: surplus if margin > 5% of demand, deficit if < -5%, else tight
@@ -261,6 +267,7 @@ def compute_day_ahead_matching(
         energy_margin_kwh=energy_margin_kwh,
         energy_margin_type=energy_margin_type,
         daily_outlook_text=daily_outlook_text,
+        simulation_based_load_24h_kwh=simulation_based_load_24h_kwh,
         surplus_windows=surplus_windows,
         deficit_windows=deficit_windows,
         min_power_margin_kw=min_power_margin_kw,
@@ -316,7 +323,7 @@ def format_day_ahead_statements(
 
     statements: List[str] = []
 
-    statements.append(f"Total load demand for the day ahead: {total_demand_kwh:.2f} kWh.")
+    statements.append(f"Planned demand (nominal) for the day ahead: {total_demand_kwh:.2f} kWh.")
     statements.append(f"Total energy forecast for tomorrow: {total_solar_kwh:.2f} kWh.")
 
     if energy_margin_type == "deficit" or energy_margin_kwh < -0.01:

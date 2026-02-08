@@ -599,7 +599,7 @@ def build_two_day_plan_pdf_from_logs(
                 load_kwh = float(day_df["load_requested_kw"].astype(float).sum() * dt_hours)
             tomorrow_outlook = {
                 "Expected solar energy": f"{pv_kwh:.1f} kWh",
-                "Expected demand": f"{load_kwh:.1f} kWh",
+                "Planned demand (nominal)": f"{load_kwh:.1f} kWh",
             }
 
     # Day-ahead matching: outlook and statement list (no per-appliance table)

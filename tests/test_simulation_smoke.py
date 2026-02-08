@@ -45,11 +45,11 @@ def test_simulation_runs_and_produces_nonzero_pv():
         assert len(df) > 0
         # Synthetic PV should have non-zero points in daytime; ensure not all zeros
         assert df["pv_now_kw"].max() > 0.1
-        # Planned daily energy from config (critical 0.25 kW*24h + wash 0.6*4*0.25 + iron 1*2*0.25)
-        assert "planned_load_energy_kwh" in out
-        assert out["planned_load_energy_kwh"] > 0
-        assert out["planned_load_energy_kwh"] < 50  # sanity: not the inflated sum(load_requested_kw)*dt
-        # Day-ahead matching uses same planned demand
+        # Nominal planned energy (Critical 24h, Flexible 4h, Deferrable 2h): critical 0.25*24 + wash 0.6*4 + iron 1*2
+        assert "planned_energy_kwh" in out
+        assert out["planned_energy_kwh"] > 0
+        assert out["planned_energy_kwh"] < 50
+        # Day-ahead matching uses same nominal for total_demand_kwh
         matching = out.get("matching_first_day", {})
         if matching:
-            assert abs(matching.get("total_demand_kwh", 0) - out["planned_load_energy_kwh"]) < 0.01
+            assert abs(matching.get("total_demand_kwh", 0) - out["planned_energy_kwh"]) < 0.01

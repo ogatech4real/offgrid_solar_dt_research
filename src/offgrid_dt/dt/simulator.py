@@ -10,7 +10,8 @@ import numpy as np
 
 from offgrid_dt.control.controllers import BaseController, ControllerInput
 from offgrid_dt.dt.battery import BatteryState, update_soc
-from offgrid_dt.dt.load import build_daily_tasks, compute_planned_daily_energy_kwh, requested_kw_for_step
+from offgrid_dt.dt.load import build_daily_tasks, requested_kw_for_step
+from offgrid_dt.planning.nominal_plan import compute_nominal_planned_energy
 from offgrid_dt.forecast.nasa_power import get_expected_ghi_next_24h
 from offgrid_dt.forecast.openweather import synthetic_irradiance_forecast
 from offgrid_dt.forecast.pv_power import irradiance_to_pv_power_kw
@@ -258,7 +259,8 @@ def simulate(
     if out:
         out["start_time"] = start.isoformat()
         out["solar_source"] = solar_source
-        out["planned_load_energy_kwh"] = compute_planned_daily_energy_kwh(appliances, steps_per_day, timestep_hours)
+        nominal = compute_nominal_planned_energy(appliances, include_12h=False)
+        out["planned_energy_kwh"] = nominal.E_plan_24h_kwh
         # Day-ahead matching: compare expected demand vs solar for first planning day
         try:
             import pandas as pd

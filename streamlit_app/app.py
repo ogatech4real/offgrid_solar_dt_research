@@ -23,6 +23,7 @@ from offgrid_dt.forecast.openweather import OpenWeatherSolarClient
 from offgrid_dt.io.schema import Appliance, SystemConfig
 from offgrid_dt.io.pdf_report import build_two_day_plan_pdf_from_logs
 from offgrid_dt.matching import compute_day_ahead_matching, format_day_ahead_statements
+from offgrid_dt.planning.nominal_plan import compute_nominal_planned_energy
 
 st.set_page_config(page_title="Off-Grid Solar Energy Planner", layout="wide")
 
@@ -369,42 +370,29 @@ st.markdown(f'<div class="load-board"><span class="load-total">Your total load: 
 st.session_state["selected_appliances"] = selected_names
 st.session_state["qty_map"] = qty_map
 
-# Running hours per group (per day, 00:00–24:00) — for planning and consumption estimate
-st.markdown("#### Select Running hours")
-st.caption("Hours per day each group is expected to run. Critical default 24h; adjust for flexible and deferrable. for each load group per day")
-run_hrs_cols = st.columns(3)
-with run_hrs_cols[0]:
-    run_hrs_critical = st.number_input("Critical (h/day)", min_value=0.0, max_value=24.0, value=24.0, step=0.5, key="run_hrs_critical")
-with run_hrs_cols[1]:
-    run_hrs_flexible = st.number_input("Flexible (h/day)", min_value=0.0, max_value=24.0, value=4.0, step=0.5, key="run_hrs_flexible")
-with run_hrs_cols[2]:
-    run_hrs_deferrable = st.number_input("Deferrable (h/day)", min_value=0.0, max_value=24.0, value=2.0, step=0.5, key="run_hrs_deferrable")
+def _build_appliances(selected_names: list, qty_map: dict) -> list:
+    name_to_obj = {a.name: a for a in catalog}
+    out = []
+    for n in selected_names:
+        base = name_to_obj[n]
+        q = int(qty_map.get(base.id, 1))
+        out.append(Appliance(**{**base.model_dump(), "power_w": float(base.power_w) * q}))
+    return out
 
-# Estimated consumption for next 12h and 24h (00:00–24:00) based on load DB selections and running hours
+# Nominal planned energy: single source of truth (Critical 24h, Flexible 4h, Deferrable 2h per day)
 st.markdown("#### Estimated consumption (next day)")
-st.caption("Based on your selected loads and running hours, your Estimated energy and power is computed.")
-run_hrs_by_cat = {"critical": run_hrs_critical, "flexible": run_hrs_flexible, "deferrable": run_hrs_deferrable}
-energy_24h_kwh = 0.0
-for a in catalog:
-    if not st.session_state.get(f"load_on_{a.id}", False):
-        continue
-    qty = int(st.session_state.get(f"qty_{a.id}", 1))
-    power_kw = (float(a.power_w) * qty) / 1000.0
-    hrs = run_hrs_by_cat.get(a.category, 24.0)
-    energy_24h_kwh += power_kw * hrs
-energy_12h_kwh = energy_24h_kwh * (12.0 / 24.0)
-avg_power_24h_kw = energy_24h_kwh / 24.0 if energy_24h_kwh else 0.0
-avg_power_12h_kw = energy_12h_kwh / 12.0 if energy_12h_kwh else 0.0
-
+st.caption("Planned demand (nominal) from your selected loads. Nominal runtimes: Critical 24 h/day, Flexible 4 h/day, Deferrable 2 h/day.")
+appliances_nominal = _build_appliances(selected_names, qty_map)
+nominal = compute_nominal_planned_energy(appliances_nominal)
 est_cols = st.columns(2)
 with est_cols[0]:
     st.markdown("**Next 24h (00:00–24:00)**")
-    st.metric("Estimated energy", f"{energy_24h_kwh:.2f} kWh")
-    st.metric("Average power", f"{avg_power_24h_kw:.2f} kW")
+    st.metric("Planned demand (nominal)", f"{nominal.E_plan_24h_kwh:.2f} kWh")
+    st.metric("Average power", f"{nominal.P_avg_kw:.2f} kW")
 with est_cols[1]:
     st.markdown("**Next 12h (00:00–12:00)**")
-    st.metric("Estimated energy", f"{energy_12h_kwh:.2f} kWh")
-    st.metric("Average power", f"{avg_power_12h_kw:.2f} kW")
+    st.metric("Planned demand (nominal)", f"{(nominal.E_plan_12h_kwh or 0):.2f} kWh")
+    st.metric("Average power", f"{(nominal.E_plan_12h_kwh or 0) / 12.0:.2f} kW" if nominal.E_plan_12h_kwh else "0.00 kW")
 
 # Auto-run trigger on autorefresh
 if st.session_state.get("auto_enabled", False) and not run_btn:
@@ -419,17 +407,6 @@ if st.session_state.get("auto_enabled", False) and not run_btn:
         run_btn = True
 
 # ---------------------------- Build config + run simulation ----------------------------
-def _build_appliances(selected_names: list[str], qty_map: dict) -> list[Appliance]:
-    catalog = appliance_catalog()
-    name_to_obj = {a.name: a for a in catalog}
-    out: list[Appliance] = []
-    for n in selected_names:
-        base = name_to_obj[n]
-        q = int(qty_map.get(base.id, 1))
-        # represent quantity by scaling power
-        out.append(Appliance(**{**base.model_dump(), "power_w": float(base.power_w) * q}))
-    return out
-
 if run_btn:
     cfg = SystemConfig(
         location_name=st.session_state.get("location_name", ""),
@@ -590,7 +567,7 @@ if matching:
     with mcol1:
         st.metric("Expected solar", f"{float(_m(matching, 'total_solar_kwh', 0)):.2f} kWh")
     with mcol2:
-        st.metric("Your planned demand", f"{float(_m(matching, 'total_demand_kwh', 0)):.2f} kWh")
+        st.metric("Planned demand (nominal)", f"{float(res.get('planned_energy_kwh', _m(matching, 'total_demand_kwh', 0))):.2f} kWh")
     with mcol3:
         margin_label = f"{float(_m(matching, 'energy_margin_kwh', 0)):+.2f} kWh"
         st.metric("Energy margin", margin_label)
