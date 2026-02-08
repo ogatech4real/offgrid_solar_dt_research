@@ -331,8 +331,8 @@ else:
     st.caption("Set your location in the sidebar and add an OpenWeather API key in secrets to see the weather here.")
 
 # ---------------------------- Main: Load (distribution board) — three columns, expanders, compact rows ----------------------------
-st.markdown("### Your loads")
-st.caption("Turn loads on or off to match your household. Your total load updates as you select — this is advisory only; nothing is switched automatically.")
+st.markdown("### Load Distribution and selection")
+st.caption("Turn loads on or off to match your household demand. Your total load updates automatically as you select.")
 catalog = appliance_catalog()
 # Toggle and qty widgets own their keys (load_on_*, qty_*); do not set them via session_state.
 
@@ -370,8 +370,8 @@ st.session_state["selected_appliances"] = selected_names
 st.session_state["qty_map"] = qty_map
 
 # Running hours per group (per day, 00:00–24:00) — for planning and consumption estimate
-st.markdown("#### Running hours (per day)")
-st.caption("Hours per day each group is expected to run. Used for 24h / 12h consumption estimate and planning. Critical default 24h; adjust for flexible and deferrable.")
+st.markdown("#### Select Running hours")
+st.caption("Hours per day each group is expected to run. Critical default 24h; adjust for flexible and deferrable. for each load group per day")
 run_hrs_cols = st.columns(3)
 with run_hrs_cols[0]:
     run_hrs_critical = st.number_input("Critical (h/day)", min_value=0.0, max_value=24.0, value=24.0, step=0.5, key="run_hrs_critical")
@@ -381,8 +381,8 @@ with run_hrs_cols[2]:
     run_hrs_deferrable = st.number_input("Deferrable (h/day)", min_value=0.0, max_value=24.0, value=2.0, step=0.5, key="run_hrs_deferrable")
 
 # Estimated consumption for next 12h and 24h (00:00–24:00) based on load DB selections and running hours
-st.markdown("#### Your estimated consumption (next day)")
-st.caption("Based on your selected loads and running hours — use this to compare with the solar outlook below.")
+st.markdown("#### Estimated consumption (next day)")
+st.caption("Based on your selected loads and running hours, your Estimated energy and power is computed.")
 run_hrs_by_cat = {"critical": run_hrs_critical, "flexible": run_hrs_flexible, "deferrable": run_hrs_deferrable}
 energy_24h_kwh = 0.0
 for a in catalog:
@@ -477,12 +477,10 @@ df = pd.read_csv(state_csv)
 df["ts"] = pd.to_datetime(df["timestamp"])
 t0 = pd.to_datetime(res.get("start_time", df["timestamp"].iloc[0] if len(df) else None))
 
-# Replay control
-st.markdown("### Explore your plan over time")
-st.caption("Scrub through the next day (00:00–24:00) to see how solar and your loads interact at each step.")
+# Replay control (hidden slider for step selection)
 step_max = max(0, len(df) - 1)
 default_step = int(st.session_state.get("replay_step", min(step_max, 0)))
-step = st.slider("Time step", min_value=0, max_value=step_max, value=default_step, help="Move the slider to see any moment in your plan.")
+step = st.slider("Time step", min_value=0, max_value=step_max, value=default_step, help="Move the slider to see any moment in your plan.", label_visibility="collapsed")
 st.session_state["replay_step"] = step
 
 row = df.iloc[step]
@@ -530,8 +528,8 @@ def _fmt_tw(tw, step_min, tz_offset_seconds: int = 0):
     return f"{sh:02d}:{sm:02d}–{eh:02d}:{em:02d}"
 
 # ---------------------------- Day-ahead outlook (Advisory) ----------------------------
-st.markdown("### Your day-ahead outlook (00:00–24:00)")
-st.markdown('**What to expect** — How your demand compares with expected solar for the next planning day. Based on real solar data; conditions may vary.')
+st.markdown("### Day-ahead outlook (00:00–24:00)")
+st.caption("Your expected solar energy for the next day (00:00hr - 24:00hrs). Computed from your solar panel configuration and real solar data (GHI).")
 if matching:
     step_min = _m(matching, "timestep_minutes", DT_MINUTES_DEFAULT)
     risk_val = _m(matching, "risk_level", "")
@@ -585,13 +583,9 @@ if matching:
     )
     st.plotly_chart(fig_solar, use_container_width=True)
     st.caption(f"Solar data for this run: **{source_label}**. Times shown in local time for your location.")
-    if solar_source == "nasa_power_doy":
-        st.caption("Expected solar: estimated from historical data at your location.")
-    elif solar_source == "nasa_power_yesterday":
-        st.caption("Expected solar: yesterday's profile at your location.")
 
     # 2) Summary: total expected solar, planned demand
-    st.markdown("#### Your 24h summary")
+    st.markdown("#### Day-ahead summary (24H)")
     mcol1, mcol2, mcol3, mcol4 = st.columns(4)
     with mcol1:
         st.metric("Expected solar", f"{float(_m(matching, 'total_solar_kwh', 0)):.2f} kWh")
