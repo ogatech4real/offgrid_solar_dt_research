@@ -592,7 +592,11 @@ def build_two_day_plan_pdf_from_logs(
             day_df = df2[df2["day"] == d1]
             dt_hours = timestep_minutes / 60.0
             pv_kwh = float(day_df["pv_now_kw"].astype(float).sum() * dt_hours)
-            load_kwh = float(day_df["load_requested_kw"].astype(float).sum() * dt_hours)
+            # Use planned daily energy from matching (config-based), not sum(load_requested_kw)*dt
+            if matching_result is not None:
+                load_kwh = float(matching_result.get("total_demand_kwh", 0) if isinstance(matching_result, dict) else getattr(matching_result, "total_demand_kwh", 0) or 0)
+            else:
+                load_kwh = float(day_df["load_requested_kw"].astype(float).sum() * dt_hours)
             tomorrow_outlook = {
                 "Expected solar energy": f"{pv_kwh:.1f} kWh",
                 "Expected demand": f"{load_kwh:.1f} kWh",

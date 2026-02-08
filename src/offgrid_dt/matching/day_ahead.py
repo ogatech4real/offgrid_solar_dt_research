@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
 
+from offgrid_dt.dt.load import compute_planned_daily_energy_kwh
 from offgrid_dt.io.schema import Appliance, SystemConfig
 
 # Advisory status per appliance (traceable to surplus/deficit and priority)
@@ -184,9 +185,9 @@ def compute_day_ahead_matching(
     load_kw = day_df["load_requested_kw"].fillna(0.0).to_numpy(dtype=float)
     crit_kw = day_df["crit_requested_kw"].fillna(0.0).to_numpy(dtype=float)
 
-    # 1) Daily energy feasibility
+    # 1) Daily energy feasibility: planned demand from config (power×duration once), not sum(load_requested_kw)*dt
     total_solar_kwh = float(pv_kw.sum()) * dt_hours
-    total_demand_kwh = float(load_kw.sum()) * dt_hours
+    total_demand_kwh = compute_planned_daily_energy_kwh(appliances, steps_per_day, dt_hours)
     energy_margin_kwh = total_solar_kwh - total_demand_kwh
 
     # Margin type: surplus if margin > 5% of demand, deficit if < -5%, else tight

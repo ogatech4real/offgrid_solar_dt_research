@@ -7,6 +7,31 @@ import numpy as np
 from offgrid_dt.io.schema import Appliance, TaskInstance
 
 
+def compute_planned_daily_energy_kwh(
+    appliances: List[Appliance],
+    day_steps: int,
+    dt_h: float,
+) -> float:
+    """Planned daily energy (kWh) from configuration: critical runs full day; each task contributes power × duration once.
+
+    Do not integrate load_requested_kw over steps (that double-counts overlapping windows).
+    """
+    crit_kw = sum(a.power_w for a in appliances if a.category == "critical") / 1000.0
+    E_crit = crit_kw * day_steps * dt_h
+
+    E_tasks = 0.0
+    for a in appliances:
+        if a.category == "critical":
+            continue
+        p_kw = a.power_w / 1000.0
+        if a.category == "deferrable" and a.daily_quota_steps > 0:
+            E_tasks += p_kw * a.daily_quota_steps * dt_h
+        else:
+            E_tasks += p_kw * a.duration_steps * dt_h
+
+    return E_crit + E_tasks
+
+
 def build_daily_tasks(appliances: List[Appliance], day_steps: int, rng: np.random.Generator) -> Tuple[float, List[TaskInstance]]:
     critical_w = sum(a.power_w for a in appliances if a.category == "critical")
     critical_base_kw = critical_w / 1000.0
