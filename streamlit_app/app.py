@@ -171,7 +171,15 @@ def weather_icon_url(icon: str) -> str:
 
 # ---------------------------- Plotting ----------------------------
 
-def plot_power_and_energy(ts: pd.DatetimeIndex, pv_kw: np.ndarray, dt_minutes: int) -> go.Figure:
+def _utc_to_local_display(ts: pd.Series | pd.DatetimeIndex, offset_seconds: int) -> pd.DatetimeIndex:
+    """Convert UTC timestamps to local for display only. offset_seconds from OpenWeather (e.g. 19800 for IST)."""
+    if offset_seconds == 0:
+        return pd.DatetimeIndex(ts) if not isinstance(ts, pd.DatetimeIndex) else ts
+    delta = pd.Timedelta(seconds=offset_seconds)
+    return pd.DatetimeIndex(ts) + delta if not isinstance(ts, pd.DatetimeIndex) else ts + delta
+
+
+def plot_power_and_energy(ts: pd.DatetimeIndex, pv_kw: np.ndarray, dt_minutes: int, xaxis_label: str = "Time (Local)") -> go.Figure:
     dt_hours = dt_minutes / 60.0
     cum_kwh = np.cumsum(pv_kw) * dt_hours
 
@@ -184,7 +192,10 @@ def plot_power_and_energy(ts: pd.DatetimeIndex, pv_kw: np.ndarray, dt_minutes: i
         go.Scatter(x=ts, y=cum_kwh, mode="lines", line_shape="spline", name="Cumulative PV Energy (kWh)"),
         secondary_y=True,
     )
-    fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"), font=dict(family="Plus Jakarta Sans, sans-serif"))
+    fig.update_layout(
+        height=360, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"),
+        font=dict(family="Plus Jakarta Sans, sans-serif"), xaxis_title=xaxis_label,
+    )
     fig.update_yaxes(title_text="kW", secondary_y=False)
     fig.update_yaxes(title_text="kWh", secondary_y=True)
     return fig
@@ -301,6 +312,10 @@ if client:
     except Exception:
         weather = None
 st.session_state["current_weather"] = weather
+if weather:
+    st.session_state["location_timezone_offset_seconds"] = int(weather.get("timezone", 0) or 0)
+else:
+    st.session_state["location_timezone_offset_seconds"] = st.session_state.get("location_timezone_offset_seconds", 0)
 if weather:
     wcols = st.columns([2, 2, 2, 2, 2])
     icon_url = weather_icon_url(weather.get("icon", ""))
@@ -498,16 +513,20 @@ def _m(v, key, default=None):
     if v is None: return default
     return v.get(key, default) if isinstance(v, dict) else getattr(v, key, default)
 
-def _fmt_tw(tw, step_min):
+def _fmt_tw(tw, step_min, tz_offset_seconds: int = 0):
     if isinstance(tw, dict):
         s, e = tw.get("start_step", 0), tw.get("end_step", 0)
     else:
         s, e = tw.start_step, tw.end_step
     start_min = s * step_min
     end_min = (e + 1) * step_min
-    sh, sm = divmod(start_min, 60)
-    eh, em = divmod(end_min, 60)
-    return f"{int(sh):02d}:{int(sm):02d}–{int(eh):02d}:{int(em):02d}"
+    if tz_offset_seconds:
+        mins_offset = tz_offset_seconds // 60
+        start_min = (start_min + mins_offset) % (24 * 60)
+        end_min = (end_min + mins_offset) % (24 * 60)
+    sh, sm = divmod(int(start_min), 60)
+    eh, em = divmod(int(end_min), 60)
+    return f"{sh:02d}:{sm:02d}–{eh:02d}:{em:02d}"
 
 # ---------------------------- Day-ahead outlook (Advisory) ----------------------------
 st.markdown("### Your day-ahead outlook (00:00–24:00)")
@@ -518,10 +537,10 @@ if matching:
     risk_matching = str(risk_val).lower()
     risk_cls = {"low": "low", "medium": "med", "high": "high"}.get(risk_matching, "")
 
-    # 1) Chart: Expected solar (PV power kW) over 24h; show data source on chart
+    # 1) Chart: Expected solar (PV power kW) over 24h; show data source on chart (time axis in local time)
     solar_source = (res.get("solar_source") or "synthetic").lower()
     if solar_source == "nasa_power_doy":
-        source_label = "NASA POWER (DOY±3 last year)"
+        source_label = "NASA POWER (Estimated)"
     elif solar_source == "nasa_power_yesterday":
         source_label = "NASA POWER (yesterday)"
     elif solar_source == "nasa_power_historical":
@@ -530,17 +549,19 @@ if matching:
         source_label = "NASA POWER"
     else:
         source_label = "Synthetic (demo)"
+    tz_offset_sec = int(st.session_state.get("location_timezone_offset_seconds", 0) or 0)
     steps_24h = int(24 * 60 / DT_MINUTES_DEFAULT)
     df_day = df.head(steps_24h)
     pv_kw_24h = df_day["pv_now_kw"].to_numpy(dtype=float)
-    ts_24h = pd.to_datetime(df_day["ts"])
+    ts_24h_utc = pd.to_datetime(df_day["ts"])
+    ts_24h = _utc_to_local_display(ts_24h_utc, tz_offset_sec)
     fig_solar = go.Figure()
     fig_solar.add_trace(go.Scatter(x=ts_24h, y=pv_kw_24h, mode="lines", line_shape="spline", name="Expected PV power (kW)", line=dict(color="#0ea5e9")))
     fig_solar.update_layout(
         title="Expected solar over the next 24 hours",
         height=300,
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis_title="Time (UTC)",
+        xaxis_title="Time (Local)",
         yaxis_title="kW",
         font=dict(family="Plus Jakarta Sans, sans-serif"),
         annotations=[
@@ -562,9 +583,9 @@ if matching:
         ],
     )
     st.plotly_chart(fig_solar, use_container_width=True)
-    st.caption(f"Solar data for this run: **{source_label}**.")
+    st.caption(f"Solar data for this run: **{source_label}**. Times shown in local time for your location.")
     if solar_source == "nasa_power_doy":
-        st.caption("Expected solar: DOY±3 days last year at your location (7-day mean).")
+        st.caption("Expected solar: estimated from historical data at your location.")
     elif solar_source == "nasa_power_yesterday":
         st.caption("Expected solar: yesterday's profile at your location.")
 
@@ -580,7 +601,7 @@ if matching:
         st.metric("Energy margin", margin_label)
     with mcol4:
         st.markdown(f'<span class="pill {risk_cls}">Risk: {str(risk_val).title()}</span>', unsafe_allow_html=True)
-        st.caption("Day-ahead risk (overall tomorrow)")
+        st.caption("Day-ahead risk (overall tomorrow). Based on daily energy margin vs expected solar: high if deficit; low if margin ≥10% of solar; medium if margin under 10%.")
 
     # 3) Comparative metrics and advisory text
     st.markdown(f'<div class="card"><p class="kpi">{_m(matching, "daily_outlook_text", "")}</p></div>', unsafe_allow_html=True)
@@ -590,22 +611,23 @@ if matching:
     surplus_flag = pv_kw_24h >= load_kw_day
     colors = ["#22c55e" if s else "#ef4444" for s in surplus_flag]
     fig_bars = go.Figure(go.Bar(x=ts_24h, y=[1 if s else -1 for s in surplus_flag], marker_color=colors, name="Surplus (green) / Deficit (red)"))
-    fig_bars.update_layout(title="When you have surplus (green) vs deficit (red) — 15-min steps", height=220, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (UTC)", yaxis_title="", yaxis=dict(tickvals=[-1, 1], ticktext=["Deficit", "Surplus"]), font=dict(family="Plus Jakarta Sans, sans-serif"))
+    fig_bars.update_layout(title="When you have surplus (green) vs deficit (red) — 15-min steps", height=220, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="Time (Local)", yaxis_title="", yaxis=dict(tickvals=[-1, 1], ticktext=["Deficit", "Surplus"]), font=dict(family="Plus Jakarta Sans, sans-serif"))
     st.plotly_chart(fig_bars, use_container_width=True)
 
     # 5) Surplus/deficit windows list — matches bar chart; note on critical load and inverter
     with st.expander("Surplus and deficit windows (solar ≥ demand vs demand > solar)"):
         sur = _m(matching, "surplus_windows") or []
         def_ = _m(matching, "deficit_windows") or []
+        tz_off = int(st.session_state.get("location_timezone_offset_seconds", 0) or 0)
         if sur:
-            st.markdown("**Surplus windows** (solar ≥ demand): " + ", ".join(_fmt_tw(tw, step_min) for tw in sur))
+            st.markdown("**Surplus windows** (solar ≥ demand): " + ", ".join(_fmt_tw(tw, step_min, tz_off) for tw in sur))
         else:
             st.caption("No surplus windows in the first 24h.")
         if def_:
-            st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw, step_min) for tw in def_))
+            st.markdown("**Deficit windows** (demand > solar): " + ", ".join(_fmt_tw(tw, step_min, tz_off) for tw in def_))
         else:
             st.caption("No deficit windows.")
-        st.caption("Green = surplus (solar covers demand). Red = deficit — during these times, prioritise essentials and consider shifting heavy loads to surplus windows.")
+        st.caption("Times in local. Green = surplus (solar covers demand). Red = deficit — during these times, prioritise essentials and consider shifting heavy loads to surplus windows.")
     if not _m(matching, "critical_fully_protected", True):
         st.warning("Your critical loads aren't fully protected in every timestep. Prioritise essentials and avoid adding heavy loads during deficit windows.")
 else:
@@ -630,28 +652,6 @@ with col4:
     st.markdown('<div class="card"><div class="muted">Battery throughput</div>'
                 f'<div class="kpi">{float(row.get("kpi_Battery_throughput_kwh", 0)):.2f} kWh</div>'
                 '<div class="muted">Charge/discharge so far (wear proxy)</div></div>', unsafe_allow_html=True)
-
-# Instantaneous power available on inverter vs total selected load
-pv_now_kw = float(row.get("pv_now_kw", 0.0))
-soc_now = float(row.get("soc_now", 0.0))
-soc_min = float(row.get("soc_min", 0.25))
-inv_kw = float(st.session_state.get("inv_kw", 2.5))
-battery_available_kw = inv_kw if soc_now > soc_min else 0.0
-power_available_kw = pv_now_kw + battery_available_kw
-total_selected_kw = sum(
-    float(a.power_w) * int(st.session_state.get(f"qty_{a.id}", 1))
-    for a in appliance_catalog()
-    if st.session_state.get(f"load_on_{a.id}", False)
-) / 1000.0
-st.markdown("#### Power available vs your load (at this time step)")
-pcols = st.columns(3)
-with pcols[0]:
-    st.metric("Solar now", f"{pv_now_kw:.2f} kW")
-with pcols[1]:
-    st.metric("Power available (solar + battery)", f"{power_available_kw:.2f} kW")
-with pcols[2]:
-    st.metric("Your total selected load", f"{total_selected_kw:.2f} kW")
-st.caption("What you can draw right now (solar + battery when SOC is above reserve) versus what your selected loads ask for.")
 
 # Recommendation (for current replay step; regenerated when you run again)
 st.markdown("### Recommendation for this time step")
@@ -685,25 +685,29 @@ with gcol2:
                 f'<div class="kpi">{soc_pct:.0f}% SOC · {battery_state_label}</div>'
                 '<div class="muted">We keep a reserve for you; this is advisory only.</div></div>', unsafe_allow_html=True)
 
-# Forecast from replay point (24h or 48h) — for exploring the timeline
+# Forecast from replay point (24h or 48h) — for exploring the timeline (time axis: local)
+tz_off = int(st.session_state.get("location_timezone_offset_seconds", 0) or 0)
 st.markdown("### Solar forecast from this time step")
+st.caption("Times shown in local time for your location.")
 horizon_hours = st.radio("Show next", [24, 48], format_func=lambda x: f"{x} hours", horizontal=True, key="forecast_horizon")
 steps = int(horizon_hours * 60 / DT_MINUTES_DEFAULT)
 i0 = step
 i1 = min(i0 + steps, len(df))
 pv_kw = df["pv_now_kw"].iloc[i0:i1].to_numpy(dtype=float)
-ts = pd.date_range(now_ts, periods=len(pv_kw), freq=f"{DT_MINUTES_DEFAULT}min")
-fig = plot_power_and_energy(ts, pv_kw, DT_MINUTES_DEFAULT)
+ts_utc = pd.date_range(now_ts, periods=len(pv_kw), freq=f"{DT_MINUTES_DEFAULT}min")
+ts_display = _utc_to_local_display(ts_utc, tz_off)
+fig = plot_power_and_energy(ts_display, pv_kw, DT_MINUTES_DEFAULT, xaxis_label="Time (Local)")
 st.plotly_chart(fig, width="stretch")
 
-# Load vs served (less technical phrasing)
+# Load vs served (less technical phrasing) — time axis in local
 st.markdown("### Household Power Use")
 sub = df.iloc[max(0, step - 96) : min(len(df), step + 96)].copy()
+sub_ts_local = _utc_to_local_display(sub["ts"], tz_off)
 fig2 = go.Figure()
-fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["load_requested_kw"], mode="lines", name="Requested load (kW)"))
-fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["load_served_kw"], mode="lines", name="Served load (kW)"))
-fig2.add_trace(go.Scatter(x=sub["ts"], y=sub["pv_now_kw"], mode="lines", name="Solar power (kW)"))
-fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
+fig2.add_trace(go.Scatter(x=sub_ts_local, y=sub["load_requested_kw"], mode="lines", name="Requested load (kW)"))
+fig2.add_trace(go.Scatter(x=sub_ts_local, y=sub["load_served_kw"], mode="lines", name="Served load (kW)"))
+fig2.add_trace(go.Scatter(x=sub_ts_local, y=sub["pv_now_kw"], mode="lines", name="Solar power (kW)"))
+fig2.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"), xaxis_title="Time (Local)")
 st.plotly_chart(fig2, width="stretch")
 
 # Appliance advice (day-ahead) — statement list, not per-appliance table
@@ -769,9 +773,14 @@ else:
             if appl_id in ids and sidx < steps_in_day:
                 matrix[i, sidx] = 1
 
-    x_labels = [f"{(i*DT_MINUTES_DEFAULT)//60:02d}:{(i*DT_MINUTES_DEFAULT)%60:02d}" for i in range(steps_in_day)]
+    # Time axis in local for the selected day
+    tz_off_hm = int(st.session_state.get("location_timezone_offset_seconds", 0) or 0)
+    day_ts = day_match if hasattr(day_match, "year") else pd.Timestamp(day_match)
+    x_labels = [
+        (datetime(day_ts.year, day_ts.month, day_ts.day, 0, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=i * DT_MINUTES_DEFAULT) + timedelta(seconds=tz_off_hm)
+    ).strftime("%H:%M") for i in range(steps_in_day)]
     fig_hm = go.Figure(data=go.Heatmap(z=matrix, x=x_labels, y=apps))
-    fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10), font=dict(family="Plus Jakarta Sans, sans-serif"))
+    fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10), font=dict(family="Plus Jakarta Sans, sans-serif"), xaxis_title="Time (Local)")
     st.plotly_chart(fig_hm, width="stretch")
 
 # Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
@@ -785,7 +794,7 @@ with dcols[1]:
 
 _solar_src = (res.get("solar_source") or "synthetic").lower()
 _solar_src_label = (
-    "NASA POWER (DOY±3 last year)" if _solar_src == "nasa_power_doy"
+    "NASA POWER (Estimated)" if _solar_src == "nasa_power_doy"
     else ("NASA POWER (yesterday)" if _solar_src == "nasa_power_yesterday"
     else ("NASA POWER (7-day mean)" if _solar_src == "nasa_power_historical"
     else ("NASA POWER" if _solar_src == "nasa_power" else "Synthetic (demo)")))
@@ -817,6 +826,7 @@ try:
         weather_summary=weather_summary,
         system_summary_override=system_summary_for_pdf,
         matching_result=matching_for_pdf,
+        timezone_offset_seconds=int(st.session_state.get("location_timezone_offset_seconds", 0) or 0),
     )
 except Exception:
     pdf_bytes = build_two_day_plan_pdf_from_logs(
@@ -826,6 +836,7 @@ except Exception:
         weather_summary=weather_summary,
         system_summary_override=system_summary_for_pdf,
         matching_result=None,
+        timezone_offset_seconds=int(st.session_state.get("location_timezone_offset_seconds", 0) or 0),
     )
 with dcols[2]:
     st.download_button("Download plan (PDF: Today + Tomorrow)", data=pdf_bytes, file_name="solar_plan_today_tomorrow.pdf", mime="application/pdf", width="stretch")

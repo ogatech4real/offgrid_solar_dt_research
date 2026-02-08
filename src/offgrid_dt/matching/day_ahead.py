@@ -233,13 +233,16 @@ def compute_day_ahead_matching(
             critical_shortfall_steps.append(i)
     flexible_deferrable_shortfall_steps = [i for i in range(len(pv_kw)) if deficit_step[i]]
 
-    # 4) Risk level from worst-case margin (energy and power)
-    if not critical_fully_protected or energy_margin_kwh < -0.5:
+    # 4) Day-ahead risk from daily energy margin relative to expected solar (overall tomorrow)
+    # High: M_E < 0 (net deficit). Low: M_E >= 0.1 * E_PV (≥10% buffer). Medium: 0 <= M_E < 0.1 * E_PV.
+    if energy_margin_kwh < 0:
         risk_level: RiskLevel = "high"
-    elif energy_margin_kwh < 0 or min_power_margin_kw < -0.5:
-        risk_level = "medium"
-    else:
+    elif total_solar_kwh <= 0:
+        risk_level = "low" if energy_margin_kwh >= 0 else "high"
+    elif energy_margin_kwh >= 0.1 * total_solar_kwh:
         risk_level = "low"
+    else:
+        risk_level = "medium"
 
     # 5) Appliance-level advisories (traceable to surplus/deficit and category)
     appliance_advisories = _compute_appliance_advisories(

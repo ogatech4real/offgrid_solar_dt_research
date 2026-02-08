@@ -70,6 +70,7 @@ class OpenWeatherSolarClient:
             "wind_speed_mps": float(wind.get("speed", 0.0) or 0.0),
             "sunrise_ts": int(sys.get("sunrise", 0) or 0),
             "sunset_ts": int(sys.get("sunset", 0) or 0),
+            "timezone": int(data.get("timezone", 0) or 0),
         }
 
     def fetch_irradiance_forecast(self, lat: float, lon: float, hours: int = 24) -> List[IrradiancePoint]:

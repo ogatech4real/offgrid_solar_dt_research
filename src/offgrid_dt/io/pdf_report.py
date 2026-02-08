@@ -382,6 +382,7 @@ def schedule_from_state_csv(
     appliance_id_to_name: Dict[str, str],
     day_index: int = 0,
     timestep_minutes: int = 15,
+    timezone_offset_seconds: int = 0,
 ) -> List[Dict[str, str]]:
     """Build a simple, human-readable schedule summary from served_task_ids.
 
@@ -433,21 +434,32 @@ def schedule_from_state_csv(
             if i == prev + 1:
                 prev = i
                 continue
-            schedule_rows.append(_window_row(d0, start, prev, timestep_minutes, appliance_id_to_name.get(appl, appl)))
+            schedule_rows.append(_window_row(d0, start, prev, timestep_minutes, appliance_id_to_name.get(appl, appl), timezone_offset_seconds))
             start = prev = i
-        schedule_rows.append(_window_row(d0, start, prev, timestep_minutes, appliance_id_to_name.get(appl, appl)))
+        schedule_rows.append(_window_row(d0, start, prev, timestep_minutes, appliance_id_to_name.get(appl, appl), timezone_offset_seconds))
 
     # Sort by time
     schedule_rows.sort(key=lambda r: r.get("time_window", ""))
     return schedule_rows
 
 
-def _window_row(day, start_step: int, end_step: int, timestep_minutes: int, appliance_name: str) -> Dict[str, str]:
+def _window_row(
+    day,
+    start_step: int,
+    end_step: int,
+    timestep_minutes: int,
+    appliance_name: str,
+    timezone_offset_seconds: int = 0,
+) -> Dict[str, str]:
     start_min = start_step * timestep_minutes
     end_min = (end_step + 1) * timestep_minutes
-    start_h, start_m = divmod(start_min, 60)
-    end_h, end_m = divmod(end_min, 60)
-    tw = f"{int(start_h):02d}:{int(start_m):02d}–{int(end_h):02d}:{int(end_m):02d}"
+    if timezone_offset_seconds:
+        mins_off = timezone_offset_seconds // 60
+        start_min = (start_min + mins_off) % (24 * 60)
+        end_min = (end_min + mins_off) % (24 * 60)
+    start_h, start_m = divmod(int(start_min), 60)
+    end_h, end_m = divmod(int(end_min), 60)
+    tw = f"{start_h:02d}:{start_m:02d}–{end_h:02d}:{end_m:02d}"
     return {"time_window": tw, "appliance": appliance_name, "advisory": "Run"}
 
 
@@ -459,6 +471,7 @@ def build_two_day_plan_pdf_from_logs(
     weather_summary: Optional[Dict[str, object]] = None,
     system_summary_override: Optional[Dict[str, str]] = None,
     matching_result: Optional[object] = None,
+    timezone_offset_seconds: int = 0,
 ) -> bytes:
     """Convenience wrapper: build a two-day PDF from the standard DT logs.
 
@@ -581,12 +594,12 @@ def build_two_day_plan_pdf_from_logs(
             }
 
     # Schedules
-    schedule_rows_today = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=0, timestep_minutes=timestep_minutes)
+    schedule_rows_today = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=0, timestep_minutes=timestep_minutes, timezone_offset_seconds=timezone_offset_seconds)
     schedule_rows_tomorrow = None
     tomorrow_outlook = None
 
     if df["timestamp"].dt.floor("D").nunique() > 1:
-        schedule_rows_tomorrow = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=1, timestep_minutes=timestep_minutes)
+        schedule_rows_tomorrow = schedule_from_state_csv(df, appliance_id_to_name=appliance_id_to_name, day_index=1, timestep_minutes=timestep_minutes, timezone_offset_seconds=timezone_offset_seconds)
         df2 = df.copy()
         df2["day"] = df2["timestamp"].dt.floor("D")
         days_list = sorted(df2["day"].unique())
@@ -623,6 +636,9 @@ def build_two_day_plan_pdf_from_logs(
             day_ahead_risk = None
             day_ahead_statements = None
 
+    notes = ADVISORY_DISCLAIMER
+    if timezone_offset_seconds:
+        notes = notes.rstrip() + " All times in this report are in local time for your location."
     return build_two_day_plan_pdf(
         title=title,
         system_summary=system_summary,
@@ -635,5 +651,5 @@ def build_two_day_plan_pdf_from_logs(
         day_ahead_outlook_text=day_ahead_outlook_text,
         day_ahead_risk=day_ahead_risk,
         day_ahead_statements=day_ahead_statements,
-        notes=ADVISORY_DISCLAIMER,
+        notes=notes,
     )
