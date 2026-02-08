@@ -36,19 +36,22 @@ def generate_guidance(cfg: SystemConfig, ctx: ExplanationContext, used_kw: float
     if deferred_count > 0:
         reason_codes.append("DEFER_TASKS")
 
-    # Headline policy
+    # Headline policy (day-ahead aware: do not say "conditions good" when solar is limited or risk is high)
     if "LOW_SOC" in reason_codes and "LOW_PV_FORECAST" in reason_codes:
         headline = "Conserve: protect battery reserve"
-        explanation = "Battery reserve is low and solar is expected to stay limited. Delay heavy and non-essential tasks." 
+        explanation = "Battery reserve is low and day-ahead solar is expected to stay limited. Delay heavy and non-essential tasks; use surplus windows when solar is available."
     elif "PV_SURPLUS" in reason_codes:
-        headline = "Use solar now: run heavy tasks"
-        explanation = "Solar is strong right now. Run high-power tasks within this window to reduce battery discharge later." 
+        headline = "Use surplus window for heavy tasks"
+        explanation = "Solar is strong in this window. Run high-power tasks during surplus periods to reduce battery discharge."
     elif deferred_count > 0:
         headline = "Shift non-critical tasks"
-        explanation = "Some tasks are deferred to keep essential loads reliable. Try again when solar improves or SOC rises." 
+        explanation = "Some tasks are deferred to keep essential loads reliable. Run them in surplus windows when solar improves or SOC rises."
+    elif "LOW_PV_FORECAST" in reason_codes or risk in ("high", "medium"):
+        headline = "Day-ahead solar limited"
+        explanation = "Expected solar for the day is limited. Use flexible appliances only in surplus windows when solar is available; prioritise essentials."
     else:
-        headline = "Normal operation"
-        explanation = "Energy conditions are acceptable. You can use flexible appliances within recommended windows." 
+        headline = "Day-ahead outlook adequate"
+        explanation = "Day-ahead energy margin is sufficient. You can use flexible appliances within the recommended surplus windows." 
 
     return Guidance(
         headline=headline,

@@ -653,16 +653,11 @@ grow = gdf.iloc[min(step, len(gdf) - 1)]
 
 headline = str(grow.get("headline", ""))
 explanation = str(grow.get("explanation", ""))
-reason_codes = grow.get("reason_codes", [])
-if isinstance(reason_codes, str):
-    reason_codes = [x.strip() for x in reason_codes.split(",")] if reason_codes else []
 
 gcol1, gcol2 = st.columns([3, 2])
 with gcol1:
     st.markdown(f"**{headline}**")
     st.write(explanation)
-    if reason_codes:
-        st.caption("Reason codes: " + ", ".join(reason_codes))
 with gcol2:
     soc_pct = 100 * float(row.get("soc_now", 0))
     risk = str(grow.get("risk_level", "")).lower()

@@ -87,7 +87,7 @@ def build_plan_pdf(
     y = _draw_paragraph(c, x0, y, explanation, max_width=w - 2 * x0, leading=12)
     y -= 0.2 * cm
     c.setFont("Helvetica", 9)
-    c.drawString(x0, y, f"Risk: {recommendations.get('risk', '')}  |  Reasons: {recommendations.get('reasons', '')}")
+    c.drawString(x0, y, f"Day-ahead risk: {recommendations.get('risk', '')}")
     y -= 0.75 * cm
 
     # Schedule table
@@ -228,11 +228,7 @@ def build_two_day_plan_pdf(
     y = _draw_paragraph(c, x0, y, recommendations_today.get("explanation", ""), max_width=w - 2 * x0, leading=12)
     y -= 0.2 * cm
     c.setFont("Helvetica", 9)
-    c.drawString(
-        x0,
-        y,
-        f"Risk: {recommendations_today.get('risk','')}  |  Reasons: {recommendations_today.get('reasons','')}",
-    )
+    c.drawString(x0, y, f"Day-ahead risk: {recommendations_today.get('risk','')}")
     y -= 0.6 * cm
 
     # Today schedule
@@ -282,11 +278,7 @@ def build_two_day_plan_pdf(
             )
             y -= 0.2 * cm
             c.setFont("Helvetica", 9)
-            c.drawString(
-                x0,
-                y,
-                f"Risk: {recommendations_tomorrow.get('risk','')}  |  Reasons: {recommendations_tomorrow.get('reasons','')}",
-            )
+            c.drawString(x0, y, f"Day-ahead risk: {recommendations_tomorrow.get('risk','')}")
             y -= 0.6 * cm
 
         y = _draw_schedule_table(
@@ -538,7 +530,6 @@ def build_two_day_plan_pdf_from_logs(
     kpis = {
         "Critical reliability (CLSR)": f"{100*float(last.get('kpi_CLSR', 0.0)):.1f} %",
         "Blackout time (critical)": f"{float(last.get('kpi_Blackout_minutes', 0.0)):.0f} minutes",
-        "Solar autonomy (SAR)": f"{100*float(last.get('kpi_SAR', 0.0)):.1f} %",
         "Solar utilization": f"{100*float(last.get('kpi_Solar_utilization', 0.0)):.1f} %",
         "Battery wear proxy": f"{float(last.get('kpi_Battery_throughput_kwh', 0.0)):.2f} kWh throughput",
     }
@@ -571,18 +562,12 @@ def build_two_day_plan_pdf_from_logs(
             if len(days) >= 1 and len(gdf) >= 1:
                 gdf["day"] = df["timestamp"].dt.floor("D").iloc[: len(gdf)].values
                 days = sorted(pd.Series(gdf["day"]).unique())
-    def _reasons_str(rc) -> str:
-        if isinstance(rc, list):
-            return ", ".join(str(x) for x in rc)
-        return str(rc) if rc else ""
-
     if days:
         g0 = gdf[gdf["day"] == days[0]].iloc[0]
         recommendations_today = {
             "headline": str(g0.get("headline", "")),
             "explanation": str(g0.get("explanation", "")),
             "risk": str(g0.get("risk_level", "")),
-            "reasons": _reasons_str(g0.get("reason_codes", [])),
         }
         if len(days) > 1:
             g1 = gdf[gdf["day"] == days[1]].iloc[0]
@@ -590,7 +575,6 @@ def build_two_day_plan_pdf_from_logs(
                 "headline": str(g1.get("headline", "")),
                 "explanation": str(g1.get("explanation", "")),
                 "risk": str(g1.get("risk_level", "")),
-                "reasons": _reasons_str(g1.get("reason_codes", [])),
             }
 
     # Schedules
@@ -635,6 +619,12 @@ def build_two_day_plan_pdf_from_logs(
             day_ahead_outlook_text = None
             day_ahead_risk = None
             day_ahead_statements = None
+
+    # Use day-ahead risk from matching when available (overrides step-level risk in recommendations)
+    if day_ahead_risk is not None and recommendations_today.get("headline") != "No recommendation":
+        recommendations_today["risk"] = str(day_ahead_risk)
+    if day_ahead_risk is not None and recommendations_tomorrow is not None:
+        recommendations_tomorrow["risk"] = str(day_ahead_risk)
 
     notes = ADVISORY_DISCLAIMER
     if timezone_offset_seconds:
