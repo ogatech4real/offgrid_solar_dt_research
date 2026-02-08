@@ -288,6 +288,7 @@ with st.sidebar:
     st.session_state["sim_days"] = days
 
     run_btn = st.button("Run my plan", type="primary")
+    st.caption("Please wait 3–5 minutes for the simulation to complete.")
     demo_btn = st.button("Try a quick demo (2 days)", help="See the full dashboard with a sample location and 2-day plan.")
     if demo_btn:
         st.session_state["loc_query"] = st.session_state.get("loc_query", "London")
@@ -601,7 +602,7 @@ if matching:
         st.metric("Energy margin", margin_label)
     with mcol4:
         st.markdown(f'<span class="pill {risk_cls}">Risk: {str(risk_val).title()}</span>', unsafe_allow_html=True)
-        st.caption("Day-ahead risk (overall tomorrow). Based on daily energy margin vs expected solar: high if deficit; low if margin ≥10% of solar; medium if margin under 10%.")
+        st.caption("Day-ahead risk")
 
     # 3) Comparative metrics and advisory text
     st.markdown(f'<div class="card"><p class="kpi">{_m(matching, "daily_outlook_text", "")}</p></div>', unsafe_allow_html=True)
@@ -633,54 +634,45 @@ if matching:
 else:
     st.caption("Run your plan to see your day-ahead outlook.")
 
-# KPI summary cards (state CSV: cumulative at current replay step — real, from day-ahead simulation)
-st.caption("At the current time step — cumulative over your run. Values update when you run your plan again.")
-col1, col2, col3, col4 = st.columns(4)
-with col1:
+# Recommendation (guidance for the selected time step + cumulative KPIs)
+st.markdown("### Recommendation")
+st.caption("Guidance for the time step you've selected.")
+# Cumulative KPIs at current step (Essential reliability, Blackout time, Battery throughput)
+rec_kpi_cols = st.columns(3)
+with rec_kpi_cols[0]:
     st.markdown('<div class="card"><div class="muted">Essential power reliability</div>'
                 f'<div class="kpi">{100*float(row.get("kpi_CLSR", 0)):.1f}%</div>'
                 '<div class="muted">How consistently your essentials stay powered</div></div>', unsafe_allow_html=True)
-with col2:
+with rec_kpi_cols[1]:
     st.markdown('<div class="card"><div class="muted">Blackout time (essentials)</div>'
                 f'<div class="kpi">{float(row.get("kpi_Blackout_minutes", 0)):.0f} min</div>'
                 '<div class="muted">Unserved essentials so far</div></div>', unsafe_allow_html=True)
-with col3:
-    st.markdown('<div class="card"><div class="muted">Solar autonomy</div>'
-                f'<div class="kpi">{100*float(row.get("kpi_SAR", 0)):.1f}%</div>'
-                '<div class="muted">Share of your demand met by solar</div></div>', unsafe_allow_html=True)
-with col4:
+with rec_kpi_cols[2]:
     st.markdown('<div class="card"><div class="muted">Battery throughput</div>'
                 f'<div class="kpi">{float(row.get("kpi_Battery_throughput_kwh", 0)):.2f} kWh</div>'
                 '<div class="muted">Charge/discharge so far (wear proxy)</div></div>', unsafe_allow_html=True)
 
-# Recommendation (for current replay step; regenerated when you run again)
-st.markdown("### Recommendation for this time step")
-st.caption("Guidance for the moment you've selected — regenerated when you run your plan again.")
 gdf = pd.read_json(guidance_jsonl, lines=True)
 if "timestamp" in gdf.columns:
     gdf["ts"] = pd.to_datetime(gdf["timestamp"], utc=True)
 grow = gdf.iloc[min(step, len(gdf) - 1)]
 
-risk = str(grow.get("risk_level", ""))
 headline = str(grow.get("headline", ""))
 explanation = str(grow.get("explanation", ""))
 reason_codes = grow.get("reason_codes", [])
 if isinstance(reason_codes, str):
     reason_codes = [x.strip() for x in reason_codes.split(",")] if reason_codes else []
-dominant = grow.get("dominant_factors", {})
 
 gcol1, gcol2 = st.columns([3, 2])
 with gcol1:
-    st.markdown(f"{_risk_pill(risk)}", unsafe_allow_html=True)
-    st.caption("**Step risk** — for this moment only. Day-ahead risk is in **Your 24h summary** above.")
     st.markdown(f"**{headline}**")
     st.write(explanation)
     if reason_codes:
         st.caption("Reason codes: " + ", ".join(reason_codes))
 with gcol2:
     soc_pct = 100 * float(row.get("soc_now", 0))
-    risk_lower = str(risk).lower()
-    battery_state_label = "Safe" if risk_lower == "low" else ("Caution" if risk_lower == "medium" else "Risk")
+    risk = str(grow.get("risk_level", "")).lower()
+    battery_state_label = "Safe" if risk == "low" else ("Caution" if risk == "medium" else "Risk")
     st.markdown('<div class="card"><div class="muted">Battery state</div>'
                 f'<div class="kpi">{soc_pct:.0f}% SOC · {battery_state_label}</div>'
                 '<div class="muted">We keep a reserve for you; this is advisory only.</div></div>', unsafe_allow_html=True)
