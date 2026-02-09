@@ -118,7 +118,11 @@ def build_plan_pdf(
             c.setFont("Helvetica", 10)
 
         c.drawString(col1, y, str(r.get("time_window", ""))[:22])
-        c.drawString(col2, y, str(r.get("appliance", ""))[:40])
+        appl = r.get("appliance", "")
+        appl_str = "" if appl is None else str(appl)
+        if not appl_str or appl_str.lower() in ("nan", "none"):
+            appl_str = "Unknown"
+        c.drawString(col2, y, appl_str[:40])
         adv = r.get("advisory", "")
         adv_str = "" if adv is None else str(adv)
         if not adv_str or adv_str.lower() in ("nan", "none"):
@@ -345,7 +349,11 @@ def _draw_schedule_table(
             y -= 0.8 * cm
             c.setFont("Helvetica", 10)
         c.drawString(col1, y, str(r.get("time_window", ""))[:22])
-        c.drawString(col2, y, str(r.get("appliance", ""))[:40])
+        appl = r.get("appliance", "")
+        appl_str = "" if appl is None else str(appl)
+        if not appl_str or appl_str.lower() in ("nan", "none"):
+            appl_str = "Unknown"
+        c.drawString(col2, y, appl_str[:40])
         adv = r.get("advisory", "")
         adv_str = "" if adv is None else str(adv)
         if not adv_str or adv_str.lower() in ("nan", "none"):
