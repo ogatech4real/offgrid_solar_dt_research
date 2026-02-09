@@ -792,24 +792,63 @@ else:
         [0.75, "#ef4444"],  # red (shortfall / avoid)
         [1.00, "#ef4444"],
     ]
-    fig_hm = go.Figure(
-        data=go.Heatmap(
-            z=z,
-            x=x_labels,
-            y=y_labels,
-            zmin=0,
-            zmax=3,
-            colorscale=colorscale,
-            showscale=False,
+
+    # Layout: heatmap on the left, intelligent legend on the right
+    hm_col, legend_col = st.columns([4, 2])
+
+    with hm_col:
+        fig_hm = go.Figure(
+            data=go.Heatmap(
+                z=z,
+                x=x_labels,
+                y=y_labels,
+                zmin=0,
+                zmax=3,
+                colorscale=colorscale,
+                showscale=False,
+            )
         )
-    )
-    fig_hm.update_layout(
-        height=260,
-        margin=dict(l=10, r=10, t=30, b=10),
-        font=dict(family="Plus Jakarta Sans, sans-serif"),
-        xaxis_title="Time (Local)",
-    )
-    st.plotly_chart(fig_hm, width="stretch")
+        fig_hm.update_layout(
+            height=260,
+            margin=dict(l=10, r=10, t=30, b=10),
+            font=dict(family="Plus Jakarta Sans, sans-serif"),
+            xaxis_title="Time (Local)",
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+
+    with legend_col:
+        st.markdown("**Legend**")
+        st.caption("Colours mean different things for each load group.")
+        st.markdown(
+            """
+<div class="card">
+  <p class="muted"><strong>Critical</strong> — must be supplied</p>
+  <ul class="muted">
+    <li><span style="display:inline-block;width:12px;height:12px;background:#22c55e;border-radius:3px;margin-right:6px;"></span>Green: critical loads fully powered</li>
+    <li><span style="display:inline-block;width:12px;height:12px;background:#ef4444;border-radius:3px;margin-right:6px;"></span>Red: shortfall risk for critical loads</li>
+    <li><span style="display:inline-block;width:12px;height:12px;background:#9ca3af;border-radius:3px;margin-right:6px;"></span>Grey: no critical demand at that time</li>
+  </ul>
+</div>
+<div style="height:0.4rem;"></div>
+<div class="card">
+  <p class="muted"><strong>Flexible</strong> — shiftable</p>
+  <ul class="muted">
+    <li><span style="display:inline-block;width:12px;height:12px;background:#fbbf24;border-radius:3px;margin-right:6px;"></span>Amber: recommended window to run flexible loads</li>
+    <li><span style="display:inline-block;width:12px;height:12px;background:#9ca3af;border-radius:3px;margin-right:6px;"></span>Grey: allowed, but not solar‑optimal</li>
+  </ul>
+</div>
+<div style="height:0.4rem;"></div>
+<div class="card">
+  <p class="muted"><strong>Deferrable</strong> — lowest priority</p>
+  <ul class="muted">
+    <li><span style="display:inline-block;width:12px;height:12px;background:#22c55e;border-radius:3px;margin-right:6px;"></span>Green: best time to run deferrable loads</li>
+    <li><span style="display:inline-block;width:12px;height:12px;background:#fbbf24;border-radius:3px;margin-right:6px;"></span>Amber: possible, but not ideal</li>
+    <li><span style="display:inline-block;width:12px;height:12px;background:#ef4444;border-radius:3px;margin-right:6px;"></span>Red: avoid — solar + system under pressure</li>
+  </ul>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
 st.markdown("### Download your plan")
