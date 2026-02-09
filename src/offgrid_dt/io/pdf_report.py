@@ -121,7 +121,7 @@ def build_plan_pdf(
         appl = r.get("appliance", "")
         appl_str = "" if appl is None else str(appl)
         if not appl_str or appl_str.lower() in ("nan", "none"):
-            appl_str = "Unknown"
+            appl_str = "Any critical"
         c.drawString(col2, y, appl_str[:40])
         adv = r.get("advisory", "")
         adv_str = "" if adv is None else str(adv)
@@ -352,7 +352,7 @@ def _draw_schedule_table(
         appl = r.get("appliance", "")
         appl_str = "" if appl is None else str(appl)
         if not appl_str or appl_str.lower() in ("nan", "none"):
-            appl_str = "Unknown"
+            appl_str = "Any critical"
         c.drawString(col2, y, appl_str[:40])
         adv = r.get("advisory", "")
         adv_str = "" if adv is None else str(adv)
