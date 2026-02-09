@@ -688,9 +688,9 @@ if matching:
 else:
     st.caption("Run your plan to see appliance advice from your day-ahead outlook.")
 
-# Schedule heatmap (log-driven; §2.2 Digital twin replay)
+# Schedule heatmap (category-level status map; §2.2 Digital twin replay)
 st.markdown("### Recommended schedule (when to run what)")
-st.caption("From your plan run: when each load would be served. Compare with **Appliance advice for tomorrow** above (based on solar vs demand).")
+st.caption("Status by load group: what is powered, what should run now, and what should wait. Compare with **Appliance advice for tomorrow** above.")
 day_df2 = df.copy()
 day_df2["day"] = day_df2["ts"].dt.floor("D")
 days_unique = sorted(day_df2["day"].unique())
@@ -707,38 +707,108 @@ else:
         index=day_index,
         format_func=lambda i: str(days_unique[i].date()) if i < len(days_unique) else "",
     )
-    day_match = days_unique[day_choice_idx]
+    day_match = days_unique[day_choice_idx]  # day we visualise
     one = day_df2[day_df2["day"] == day_match].reset_index(drop=True)
 
-    # infer appliance id -> name from catalog
-    id_to_name = {a.id: a.name for a in appliance_catalog()}
-    def _parse_ids(s: str) -> list[str]:
-        if not isinstance(s, str) or not s.strip() or s == "nan":
-            return []
-        out=[]
-        for tid in s.split(";"):
-            if tid:
-                out.append(tid.split("_")[0])
-        return out
-
-    per_step = [_parse_ids(s) for s in one.get("served_task_ids","").astype(str).tolist()]
-    apps_ids = sorted({a for step_ids in per_step for a in step_ids})
-    apps = [id_to_name.get(a,a) for a in apps_ids]
+    # Time resolution and number of steps in a 24h planning day
     steps_in_day = int(24*60/DT_MINUTES_DEFAULT)
-    matrix = np.zeros((len(apps), steps_in_day))
-    for i, appl_id in enumerate(apps_ids):
-        for sidx, ids in enumerate(per_step):
-            if appl_id in ids and sidx < steps_in_day:
-                matrix[i, sidx] = 1
+    N = min(steps_in_day, len(one))
+
+    # 1) Critical loads: protection status from simulation (must be supplied)
+    crit_req = one.get("crit_requested_kw", pd.Series([0.0]*len(one))).fillna(0.0).to_numpy(dtype=float)[:N]
+    crit_srv = one.get("crit_served_kw", pd.Series([0.0]*len(one))).fillna(0.0).to_numpy(dtype=float)[:N]
+
+    # 2) Day-ahead windows from matching (surplus/deficit) for flexible/deferrable status
+    def _get(m, key, default=None):
+        if m is None:
+            return default
+        return m.get(key, default) if isinstance(m, dict) else getattr(m, key, default)
+
+    is_surplus = [False] * steps_in_day
+    is_deficit = [False] * steps_in_day
+    sur = _get(matching, "surplus_windows", []) or []
+    for tw in sur:
+        s = int(getattr(tw, "start_step", getattr(tw, "start_step", tw.get("start_step", 0))) if not isinstance(tw, dict) else tw.get("start_step", 0))
+        e = int(getattr(tw, "end_step", getattr(tw, "end_step", tw.get("end_step", s))) if not isinstance(tw, dict) else tw.get("end_step", s))
+        for k in range(max(0, s), min(steps_in_day, e + 1)):
+            is_surplus[k] = True
+    defs = _get(matching, "deficit_windows", []) or []
+    for tw in defs:
+        s = int(getattr(tw, "start_step", getattr(tw, "start_step", tw.get("start_step", 0))) if not isinstance(tw, dict) else tw.get("start_step", 0))
+        e = int(getattr(tw, "end_step", getattr(tw, "end_step", tw.get("end_step", s))) if not isinstance(tw, dict) else tw.get("end_step", s))
+        for k in range(max(0, s), min(steps_in_day, e + 1)):
+            is_deficit[k] = True
+
+    # 3) Build category-level status matrix (rows: Critical, Flexible, Deferrable)
+    # Encoding (z values): 0 = neutral/allowed (grey), 1 = green (good/protected), 2 = amber (recommended/possible),
+    # 3 = red (shortfall/avoid).
+    z = np.zeros((3, steps_in_day), dtype=float)
+
+    # Critical: green when fully supplied, red when shortfall, grey when no critical demand.
+    for k in range(N):
+        if crit_req[k] > 0 and crit_srv[k] < crit_req[k]:
+            z[0, k] = 3  # red (shortfall risk)
+        elif crit_req[k] > 0:
+            z[0, k] = 1  # green (protected)
+        else:
+            z[0, k] = 0  # neutral (no critical demand)
+
+    # Flexible: amber in surplus windows (recommended), grey otherwise.
+    for k in range(steps_in_day):
+        if is_surplus[k]:
+            z[1, k] = 2  # amber (recommended)
+        else:
+            z[1, k] = 0  # grey (allowed but not optimal)
+
+    # Deferrable: red in deficit windows (avoid), green in surplus windows (best), amber otherwise (possible).
+    for k in range(steps_in_day):
+        if is_deficit[k]:
+            z[2, k] = 3  # red (avoid)
+        elif is_surplus[k]:
+            z[2, k] = 1  # green (best window)
+        else:
+            z[2, k] = 2  # amber (possible)
+
+    y_labels = ["Critical", "Flexible", "Deferrable"]
 
     # Time axis in local for the selected day
     tz_off_hm = int(st.session_state.get("location_timezone_offset_seconds", 0) or 0)
     day_ts = day_match if hasattr(day_match, "year") else pd.Timestamp(day_match)
     x_labels = [
-        (datetime(day_ts.year, day_ts.month, day_ts.day, 0, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=i * DT_MINUTES_DEFAULT) + timedelta(seconds=tz_off_hm)
-    ).strftime("%H:%M") for i in range(steps_in_day)]
-    fig_hm = go.Figure(data=go.Heatmap(z=matrix, x=x_labels, y=apps))
-    fig_hm.update_layout(height=280 + 10*len(apps), margin=dict(l=10, r=10, t=30, b=10), font=dict(family="Plus Jakarta Sans, sans-serif"), xaxis_title="Time (Local)")
+        (datetime(day_ts.year, day_ts.month, day_ts.day, 0, 0, 0, tzinfo=timezone.utc)
+         + timedelta(minutes=i * DT_MINUTES_DEFAULT)
+         + timedelta(seconds=tz_off_hm)
+        ).strftime("%H:%M")
+        for i in range(steps_in_day)
+    ]
+
+    colorscale = [
+        [0.00, "#9ca3af"],  # grey (neutral / allowed)
+        [0.24, "#9ca3af"],
+        [0.25, "#22c55e"],  # green (good / protected)
+        [0.49, "#22c55e"],
+        [0.50, "#fbbf24"],  # amber (recommended / possible)
+        [0.74, "#fbbf24"],
+        [0.75, "#ef4444"],  # red (shortfall / avoid)
+        [1.00, "#ef4444"],
+    ]
+    fig_hm = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=x_labels,
+            y=y_labels,
+            zmin=0,
+            zmax=3,
+            colorscale=colorscale,
+            showscale=False,
+        )
+    )
+    fig_hm.update_layout(
+        height=260,
+        margin=dict(l=10, r=10, t=30, b=10),
+        font=dict(family="Plus Jakarta Sans, sans-serif"),
+        xaxis_title="Time (Local)",
+    )
     st.plotly_chart(fig_hm, width="stretch")
 
 # Downloads (§8: evidence artifacts — system summary, weather, today/tomorrow, KPIs, advisory disclaimer)
