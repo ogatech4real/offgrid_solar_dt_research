@@ -793,58 +793,83 @@ else:
         [1.00, "#ef4444"],
     ]
 
-    # Layout: heatmap on the left, intelligent legend on the right
-    hm_col, legend_col = st.columns([4, 2])
-
-    with hm_col:
-        fig_hm = go.Figure(
-            data=go.Heatmap(
-                z=z,
-                x=x_labels,
-                y=y_labels,
-                zmin=0,
-                zmax=3,
-                colorscale=colorscale,
-                showscale=False,
-            )
+    # Full-width heatmap
+    fig_hm = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=x_labels,
+            y=y_labels,
+            zmin=0,
+            zmax=3,
+            colorscale=colorscale,
+            showscale=False,
         )
-        fig_hm.update_layout(
-            height=260,
-            margin=dict(l=10, r=10, t=30, b=10),
-            font=dict(family="Plus Jakarta Sans, sans-serif"),
-            xaxis_title="Time (Local)",
-        )
-        st.plotly_chart(fig_hm, use_container_width=True)
+    )
+    fig_hm.update_layout(
+        height=260,
+        margin=dict(l=10, r=10, t=30, b=10),
+        font=dict(family="Plus Jakarta Sans, sans-serif"),
+        xaxis_title="Time (Local)",
+    )
+    st.plotly_chart(fig_hm, use_container_width=True)
 
-    with legend_col:
-        st.markdown("**Legend**")
-        st.caption("Colours mean different things for each load group.")
+    # Compact 3-column legend under the map
+    lcol1, lcol2, lcol3 = st.columns(3)
+    with lcol1:
         st.markdown(
             """
 <div class="card">
-  <p class="muted"><strong>Critical</strong> — must be supplied</p>
-  <ul class="muted">
-    <li><span style="display:inline-block;width:12px;height:12px;background:#22c55e;border-radius:3px;margin-right:6px;"></span>Green: critical loads fully powered</li>
-    <li><span style="display:inline-block;width:12px;height:12px;background:#ef4444;border-radius:3px;margin-right:6px;"></span>Red: shortfall risk for critical loads</li>
-    <li><span style="display:inline-block;width:12px;height:12px;background:#9ca3af;border-radius:3px;margin-right:6px;"></span>Grey: no critical demand at that time</li>
-  </ul>
+  <p class="muted"><strong>Critical (must be supplied)</strong></p>
+  <p class="muted" style="margin-bottom:0.2rem;">
+    <span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:3px;margin-right:6px;"></span>
+    Green: critical loads fully powered
+  </p>
+  <p class="muted" style="margin-bottom:0.2rem;">
+    <span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:3px;margin-right:6px;"></span>
+    Red: shortfall risk for critical loads
+  </p>
+  <p class="muted" style="margin-bottom:0;">
+    <span style="display:inline-block;width:10px;height:10px;background:#9ca3af;border-radius:3px;margin-right:6px;"></span>
+    Grey: no critical demand at that time
+  </p>
 </div>
-<div style="height:0.4rem;"></div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with lcol2:
+        st.markdown(
+            """
 <div class="card">
-  <p class="muted"><strong>Flexible</strong> — shiftable</p>
-  <ul class="muted">
-    <li><span style="display:inline-block;width:12px;height:12px;background:#fbbf24;border-radius:3px;margin-right:6px;"></span>Amber: recommended window to run flexible loads</li>
-    <li><span style="display:inline-block;width:12px;height:12px;background:#9ca3af;border-radius:3px;margin-right:6px;"></span>Grey: allowed, but not solar‑optimal</li>
-  </ul>
+  <p class="muted"><strong>Flexible (shiftable)</strong></p>
+  <p class="muted" style="margin-bottom:0.2rem;">
+    <span style="display:inline-block;width:10px;height:10px;background:#fbbf24;border-radius:3px;margin-right:6px;"></span>
+    Amber: recommended time to run
+  </p>
+  <p class="muted" style="margin-bottom:0;">
+    <span style="display:inline-block;width:10px;height:10px;background:#9ca3af;border-radius:3px;margin-right:6px;"></span>
+    Grey: allowed, but not solar‑optimal
+  </p>
 </div>
-<div style="height:0.4rem;"></div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with lcol3:
+        st.markdown(
+            """
 <div class="card">
-  <p class="muted"><strong>Deferrable</strong> — lowest priority</p>
-  <ul class="muted">
-    <li><span style="display:inline-block;width:12px;height:12px;background:#22c55e;border-radius:3px;margin-right:6px;"></span>Green: best time to run deferrable loads</li>
-    <li><span style="display:inline-block;width:12px;height:12px;background:#fbbf24;border-radius:3px;margin-right:6px;"></span>Amber: possible, but not ideal</li>
-    <li><span style="display:inline-block;width:12px;height:12px;background:#ef4444;border-radius:3px;margin-right:6px;"></span>Red: avoid — solar + system under pressure</li>
-  </ul>
+  <p class="muted"><strong>Deferrable (lowest priority)</strong></p>
+  <p class="muted" style="margin-bottom:0.2rem;">
+    <span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:3px;margin-right:6px;"></span>
+    Green: best time to run
+  </p>
+  <p class="muted" style="margin-bottom:0.2rem;">
+    <span style="display:inline-block;width:10px;height:10px;background:#fbbf24;border-radius:3px;margin-right:6px;"></span>
+    Amber: possible, but not ideal
+  </p>
+  <p class="muted" style="margin-bottom:0;">
+    <span style="display:inline-block;width:10px;height:10px;background:#ef4444;border-radius:3px;margin-right:6px;"></span>
+    Red: avoid — system under pressure
+  </p>
 </div>
             """,
             unsafe_allow_html=True,
