@@ -434,6 +434,47 @@ def main() -> None:
     )
     summary.to_csv(out_root / "summary_by_controller.csv", index=False)
 
+        # ----------------------------
+    # Journal placeholder figures
+    # ----------------------------
+    fig_root = _ensure_fig_dir(out_root)
+
+    # Choose a single controller for representative-day plots (paper-friendly).
+    # Priority: forecast_heuristic if present, else first controller.
+    preferred = "forecast_heuristic"
+    chosen = preferred if preferred in df_all["controller"].unique() else df_all["controller"].iloc[0]
+
+    df_chosen_daily = df_all[df_all["controller"] == chosen].copy()
+
+    # Load chosen controller state CSV (from manifest) for day examples figure
+    chosen_state_csv = run_manifest.get(chosen, {}).get("state_csv")
+    if not chosen_state_csv:
+        # fallback: look inside run folder
+        candidate = out_root / f"run_{chosen}" / "state.csv"
+        chosen_state_csv = str(candidate) if candidate.exists() else None
+
+    if chosen_state_csv:
+        df_chosen_state = pd.read_csv(chosen_state_csv)
+    else:
+        raise RuntimeError(f"Could not locate state CSV for controller '{chosen}'.")
+
+    # Figure 1: distribution metrics (CLSR, CID, SSR)
+    _make_validation_metrics_placeholder(
+        df_chosen_daily,
+        fig_root / "validation_metrics_placeholder.png",
+    )
+
+    # Figure 2: 3 representative days (surplus/tight/deficit)
+    _make_validation_day_examples_placeholder(
+        df_state=df_chosen_state,
+        df_daily=df_chosen_daily,
+        tz=args.timezone,
+        fig_path=fig_root / "validation_day_examples_placeholder.png",
+    )
+
+    print(f" - figures/validation_metrics_placeholder.png")
+    print(f" - figures/validation_day_examples_placeholder.png")
+
     # Persist manifest
     with open(out_root / "run_manifest.json", "w", encoding="utf-8") as f:
         json.dump(run_manifest, f, indent=2)
