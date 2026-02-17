@@ -153,11 +153,11 @@ def simulate(
             # This module is introduced in research_mode repo.
             # It must expose:
             #   load_ukdale_day_profile(cfg.ukdale, day_start_utc, steps_per_day) -> (total_kw, crit_kw)
-            from offgrid_dt.research.ukdale import load_ukdale_day_profile  # type: ignore
+            from offgrid_dt.data.ukdale_loader import load_ukdale_day_profile  # type: ignore
         except Exception as e:
             raise RuntimeError(
                 "UK-DALE demand mode selected but loader is missing. "
-                "Add offgrid_dt/research/ukdale.py with load_ukdale_day_profile()."
+                "Add offgrid_dt/data/ukdale_loader.py with load_ukdale_day_profile()."
             ) from e
 
         total_kw, crit_kw = load_ukdale_day_profile(
