@@ -12,7 +12,7 @@ if str(SRC) not in sys.path:
 
 from offgrid_dt.control.controllers import get_controllers
 from offgrid_dt.dt.simulator import simulate
-from offgrid_dt.io.schema import Appliance, SystemConfig
+from offgrid_dt.io.schema import Appliance, SystemConfig, UKDALEConfig
 
 
 def default_appliances():
@@ -28,14 +28,25 @@ def default_appliances():
 
 def main():
     ap = argparse.ArgumentParser()
+
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--out", type=str, default="logs")
+
+    # Research-mode measured demand toggle
+    ap.add_argument("--ukdale", action="store_true", help="Use UK-DALE measured demand instead of task-based load")
+    ap.add_argument("--ukdale-root", type=str, default=None, help="Path to UK-DALE dataset root")
+    ap.add_argument("--house", type=str, default="1", help="UK-DALE house ID")
+    ap.add_argument("--start-date", type=str, default=None, help="Validation start date (YYYY-MM-DD)")
+    ap.add_argument("--end-date", type=str, default=None, help="Validation end date (YYYY-MM-DD)")
+    ap.add_argument("--critical-base-kw", type=float, default=0.15, help="Critical baseline kW for measured split")
+
     args = ap.parse_args()
 
+    # Base PV-battery configuration
     cfg = SystemConfig(
-        location_name="Demo",
-        latitude=28.6139,
-        longitude=77.2090,
+        location_name="Middlesbrough_UK" if args.ukdale else "Demo",
+        latitude=54.5742 if args.ukdale else 28.6139,
+        longitude=-1.2348 if args.ukdale else 77.2090,
         pv_capacity_kw=4.0,
         battery_capacity_kwh=7.5,
         inverter_max_kw=2.5,
@@ -43,11 +54,36 @@ def main():
         soc_min=0.25,
     )
 
-    appliances = default_appliances()
+    # If measured-demand validation requested
+    if args.ukdale:
+        if not args.ukdale_root:
+            raise ValueError("--ukdale-root must be provided when --ukdale is enabled")
+        if not args.start_date or not args.end_date:
+            raise ValueError("--start-date and --end-date are required for UK-DALE validation")
+
+        cfg.load_source = "ukdale"
+        cfg.ukdale = UKDALEConfig(
+            dataset_root=args.ukdale_root,
+            house_id=args.house,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            critical_baseline_kw=args.critical_base_kw,
+        )
+
+        appliances = []  # Not used in measured mode
+    else:
+        appliances = default_appliances()
+
     out_dir = Path(args.out)
 
     for c in get_controllers():
-        paths = simulate(cfg, appliances, controller=c, days=args.days, out_dir=out_dir / f"run_{c.name}")
+        paths = simulate(
+            cfg,
+            appliances,
+            controller=c,
+            days=args.days,
+            out_dir=out_dir / f"run_{c.name}",
+        )
         print(c.name, paths)
 
 
