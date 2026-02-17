@@ -3,43 +3,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-
-@dataclass(frozen=True)
-class UKDALELoadSpec:
-    """
-    Minimal spec for pulling aggregate (mains) demand from UK-DALE.
-
-    Expected UK-DALE structure:
-      <root>/
-        house_1/
-          labels.dat
-          channel_1.dat
-          channel_2.dat
-          ...
-    labels.dat lines typically: "<channel_id> <label>"
-    Aggregate mains are usually label "mains" (often two channels, summed).
-    """
-    dataset_root: Path
-    house_id: int
-    start: Optional[str] = None  # ISO date/time string, e.g. "2013-01-01"
-    end: Optional[str] = None    # ISO date/time string
-    target_timestep_minutes: int = 15
-    timezone: str = "UTC"        # UK-DALE timestamps are epoch seconds (UTC-like)
+from offgrid_dt.io.schema import UKDALEConfig
 
 
 def _read_labels(labels_path: Path) -> Dict[int, str]:
+    """
+    UK-DALE labels.dat format typically: "<channel_id> <label>"
+    Example: "1 mains", "2 mains", "3 kettle"
+    """
     labels: Dict[int, str] = {}
     if not labels_path.exists():
         return labels
+
     for raw in labels_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         raw = raw.strip()
         if not raw:
             continue
-        # "1 mains" / "2 kettle" etc.
         parts = raw.split()
         if len(parts) < 2:
             continue
@@ -54,10 +37,11 @@ def _read_labels(labels_path: Path) -> Dict[int, str]:
 
 def _read_channel_dat(path: Path) -> pd.Series:
     """
-    UK-DALE channel files are space-separated: "<epoch_seconds> <power_watts>"
+    UK-DALE channel file format: "<epoch_seconds> <power_watts>" (space-separated)
     """
     if not path.exists():
         raise FileNotFoundError(f"Missing channel file: {path}")
+
     df = pd.read_csv(
         path,
         sep=r"\s+",
@@ -65,94 +49,108 @@ def _read_channel_dat(path: Path) -> pd.Series:
         names=["ts", "power_w"],
         engine="python",
     )
-    # epoch seconds
     idx = pd.to_datetime(df["ts"], unit="s", utc=True)
     s = pd.Series(df["power_w"].astype(float).values, index=idx, name=path.stem)
-    # remove duplicates, keep last
-    s = s[~s.index.duplicated(keep="last")]
-    return s.sort_index()
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    return s
 
 
-def load_ukdale_aggregate_kw(spec: UKDALELoadSpec) -> pd.Series:
-    """
-    Returns a timezone-aware (UTC) pandas Series of aggregate demand in kW,
-    resampled to target_timestep_minutes using mean.
-    """
-    house_dir = spec.dataset_root / f"house_{spec.house_id}"
+def _resolve_house_dir(cfg: UKDALEConfig) -> Path:
+    root = Path(cfg.dataset_root).expanduser().resolve()
+    house_id = str(cfg.house_id).strip()
+    house_dir = root / f"house_{house_id}"
     if not house_dir.exists():
-        raise FileNotFoundError(f"House folder not found: {house_dir}")
+        raise FileNotFoundError(f"UK-DALE house folder not found: {house_dir}")
+    return house_dir
 
+
+def load_ukdale_aggregate_kw(cfg: UKDALEConfig) -> pd.Series:
+    """
+    Load measured aggregate demand (kW) from UK-DALE for one house,
+    resampled to cfg.resample_minutes.
+
+    Output index: UTC tz-aware timestamps.
+    """
+    house_dir = _resolve_house_dir(cfg)
     labels = _read_labels(house_dir / "labels.dat")
 
-    # pick mains channels (often 1 and 2); fallback to channel_1 if labels missing
+    # Identify mains channels (commonly 1 & 2). UK-DALE often has two "mains".
     mains_channels = [ch for ch, lab in labels.items() if lab == "mains"]
+
+    # Fallback logic if labels missing or channel name differs
     if not mains_channels:
-        # pragmatic fallback: try channels 1 and 2 if present, else channel_1 only
-        candidates = []
+        fallback = []
         if (house_dir / "channel_1.dat").exists():
-            candidates.append(1)
+            fallback.append(1)
         if (house_dir / "channel_2.dat").exists():
-            candidates.append(2)
-        mains_channels = candidates if candidates else [1]
+            fallback.append(2)
+        mains_channels = fallback if fallback else [1]
 
     mains_series: List[pd.Series] = []
     for ch in mains_channels:
-        s = _read_channel_dat(house_dir / f"channel_{ch}.dat")
-        mains_series.append(s)
+        mains_series.append(_read_channel_dat(house_dir / f"channel_{ch}.dat"))
 
     agg_w = pd.concat(mains_series, axis=1).sum(axis=1)
     agg_w.name = "mains_w"
 
-    # optional slicing
-    if spec.start:
-        agg_w = agg_w.loc[pd.to_datetime(spec.start, utc=True) :]
-    if spec.end:
-        agg_w = agg_w.loc[: pd.to_datetime(spec.end, utc=True)]
+    # Slice window (treat cfg.start_date/end_date as UTC dates unless user provided time)
+    start_ts = pd.to_datetime(cfg.start_date, utc=True)
+    end_ts = pd.to_datetime(cfg.end_date, utc=True)
 
-    # resample to fixed step; UK-DALE is irregular
-    rule = f"{int(spec.target_timestep_minutes)}min"
+    # Include full end day if user provided a date-only string
+    # (pragmatic: end at 23:59:59 of that day)
+    if len(cfg.end_date.strip()) <= 10:  # "YYYY-MM-DD"
+        end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+    agg_w = agg_w.loc[start_ts:end_ts]
+
+    # Resample to fixed grid
+    rule = f"{int(cfg.resample_minutes)}min"
     agg_w = agg_w.resample(rule).mean()
 
-    # fill small gaps; keep large gaps as NaN and later handle upstream if needed
-    agg_w = agg_w.interpolate(limit=4, limit_direction="both")  # up to 1h at 15-min
-    agg_kw = (agg_w / 1000.0).rename("mains_kw")
-    return agg_kw
+    # Fill short gaps (<= 1 hour for 15-min) to avoid dropping days due to minor missingness
+    limit_steps = max(1, int(round(60 / cfg.resample_minutes)))
+    agg_w = agg_w.interpolate(limit=limit_steps, limit_direction="both")
+
+    return (agg_w / 1000.0).rename("mains_kw")
 
 
-def slice_series_to_days(series_kw: pd.Series) -> List[pd.Series]:
+def split_into_days(series_kw: pd.Series, tz: str = "UTC") -> List[pd.Series]:
     """
-    Splits a UTC-indexed series into a list of per-day series (00:00-24:00 UTC).
-    Each item retains the original frequency (e.g. 15min) and index timestamps.
+    Split a UTC series into per-day slices, returning each day as tz-aligned series.
     """
     if series_kw.empty:
         return []
-    s = series_kw.dropna()
+    s = series_kw.dropna().copy()
     if s.empty:
         return []
-    days: List[pd.Series] = []
-    for date, grp in s.groupby(s.index.date):
-        grp = grp.sort_index()
-        days.append(grp)
-    return days
+
+    # Align to a reporting timezone if desired (Europe/London typical)
+    if tz and tz.upper() != "UTC":
+        s = s.tz_convert(tz)
+
+    out: List[pd.Series] = []
+    for _, g in s.groupby(s.index.date):
+        out.append(g.sort_index())
+    return out
 
 
-def ensure_full_day_steps(
+def align_day_to_full_steps(
     day_series_kw: pd.Series,
     timestep_minutes: int,
-    day_start_utc: Optional[pd.Timestamp] = None,
+    tz: str,
 ) -> Tuple[pd.DatetimeIndex, List[float]]:
     """
-    Builds a full-day index at the given timestep and aligns measured data onto it.
-    Missing steps are forward-filled then back-filled (conservative for demand).
+    Create a full-day time grid at timestep_minutes and align measured data onto it.
+    Conservative fill: forward-fill then back-fill.
     """
     if day_series_kw.empty:
         raise ValueError("Empty day_series_kw")
 
-    ts0 = day_start_utc or pd.Timestamp(day_series_kw.index[0].date(), tz="UTC")
+    # day start in local tz, then convert to UTC for simulation indexing consistency
+    day_local_start = pd.Timestamp(day_series_kw.index[0].date(), tz=tz)
     steps_per_day = int(round(24 * 60 / timestep_minutes))
-    full_index = pd.date_range(ts0, periods=steps_per_day, freq=f"{timestep_minutes}min", tz="UTC")
+    full_local = pd.date_range(day_local_start, periods=steps_per_day, freq=f"{timestep_minutes}min", tz=tz)
 
-    aligned = day_series_kw.reindex(full_index)
-    # conservative fill: if missing, assume last known demand (ffill), then bfill start
-    aligned = aligned.ffill().bfill()
-    return full_index, [float(v) for v in aligned.values]
+    aligned = day_series_kw.reindex(full_local).ffill().bfill()
+    return full_local, [float(v) for v in aligned.values]
