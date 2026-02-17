@@ -171,6 +171,142 @@ def _controllers_from_arg(which: str):
         raise ValueError(f"Unknown controller '{which}'. Use one of: all, {list(all_map.keys())}")
     return [all_map[which]]
 
+def _ensure_fig_dir(out_root: Path) -> Path:
+    fig_dir = out_root / "figures"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    return fig_dir
+
+
+def _pick_representative_days(df_daily: pd.DataFrame) -> Dict[str, str]:
+    """
+    Pick 3 representative days for the paper: surplus / tight / deficit.
+    Uses SSR quantiles (robust, dataset-agnostic).
+    Returns mapping: {"surplus": "YYYY-MM-DD", "tight": "...", "deficit": "..."}
+    """
+    d = df_daily.copy()
+    d["SSR"] = pd.to_numeric(d["SSR"], errors="coerce")
+    d = d.dropna(subset=["SSR"])
+    if d.empty:
+        return {}
+
+    # Quantile targets (tunable but stable)
+    targets = {
+        "surplus": float(d["SSR"].quantile(0.80)),
+        "tight": float(d["SSR"].quantile(0.50)),
+        "deficit": float(d["SSR"].quantile(0.20)),
+    }
+
+    picked: Dict[str, str] = {}
+    for k, t in targets.items():
+        idx = (d["SSR"] - t).abs().idxmin()
+        picked[k] = str(d.loc[idx, "date"])
+    return picked
+
+
+def _slice_day_state(
+    df_state: pd.DataFrame,
+    date_str: str,
+    tz: str,
+) -> pd.DataFrame:
+    """
+    Extract a single local-date slice from the simulator state csv.
+    """
+    x = df_state.copy()
+    x["timestamp"] = pd.to_datetime(x["timestamp"], utc=True, errors="coerce")
+    x = x.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+    if tz and tz.upper() != "UTC":
+        x["timestamp_local"] = x["timestamp"].dt.tz_convert(tz)
+    else:
+        x["timestamp_local"] = x["timestamp"]
+
+    target = pd.to_datetime(date_str).date()
+    return x[x["timestamp_local"].dt.date == target].copy()
+
+
+def _make_validation_metrics_placeholder(df_daily: pd.DataFrame, fig_path: Path) -> None:
+    """
+    Single figure file with distributions of CLSR, CID, SSR (paper placeholder).
+    """
+    d = df_daily.copy()
+    for col in ["CLSR", "CID_min", "SSR"]:
+        d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.replace([np.inf, -np.inf], np.nan)
+
+    clsr = d["CLSR"].dropna().values
+    cid = d["CID_min"].dropna().values
+    ssr = d["SSR"].dropna().values
+
+    plt.figure(figsize=(10, 3.2))
+    ax1 = plt.subplot(1, 3, 1)
+    ax1.hist(clsr, bins=20)
+    ax1.set_xlabel("CLSR")
+    ax1.set_ylabel("Count (days)")
+
+    ax2 = plt.subplot(1, 3, 2)
+    ax2.hist(cid, bins=20)
+    ax2.set_xlabel("CID (min)")
+    ax2.set_ylabel("Count (days)")
+
+    ax3 = plt.subplot(1, 3, 3)
+    ax3.hist(ssr, bins=20)
+    ax3.set_xlabel("SSR")
+    ax3.set_ylabel("Count (days)")
+
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=250)
+    plt.close()
+
+def _make_validation_day_examples_placeholder(
+    df_state: pd.DataFrame,
+    df_daily: pd.DataFrame,
+    tz: str,
+    fig_path: Path,
+) -> None:
+    """
+    Single figure file with 3 representative days (surplus/tight/deficit).
+    Plots PV vs requested vs served load for interpretability.
+    """
+    reps = _pick_representative_days(df_daily)
+    if not reps:
+        raise RuntimeError("Could not pick representative days (daily metrics empty).")
+
+    # Order fixed for manuscript narrative
+    order = [("surplus", reps["surplus"]), ("tight", reps["tight"]), ("deficit", reps["deficit"])]
+
+    plt.figure(figsize=(10, 7.5))
+
+    for i, (label, day) in enumerate(order, start=1):
+        day_df = _slice_day_state(df_state, day, tz=tz)
+        if day_df.empty:
+            continue
+
+        t = day_df["timestamp_local"]
+        pv = pd.to_numeric(day_df["pv_now_kw"], errors="coerce")
+        req = pd.to_numeric(day_df["load_requested_kw"], errors="coerce")
+        served = pd.to_numeric(day_df["load_served_kw"], errors="coerce")
+        crit_req = pd.to_numeric(day_df["crit_requested_kw"], errors="coerce")
+        crit_served = pd.to_numeric(day_df["crit_served_kw"], errors="coerce")
+
+        ax = plt.subplot(3, 1, i)
+        ax.plot(t, pv, label="PV (kW)")
+        ax.plot(t, req, label="Requested load (kW)")
+        ax.plot(t, served, label="Served load (kW)")
+        ax.plot(t, crit_req, label="Critical requested (kW)")
+        ax.plot(t, crit_served, label="Critical served (kW)")
+
+        # Title includes SSR for paper readability
+        ssr_val = df_daily.loc[df_daily["date"] == day, "SSR"]
+        ssr_txt = f"{float(ssr_val.iloc[0]):.2f}" if len(ssr_val) else "n/a"
+        ax.set_title(f"{label.capitalize()} day ({day}) — SSR={ssr_txt}")
+        ax.set_ylabel("kW")
+        ax.grid(True, alpha=0.25)
+        if i == 1:
+            ax.legend(loc="upper right", ncol=2, fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(fig_path, dpi=250)
+    plt.close()
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="UK-DALE measured-demand validation runner (research mode).")
