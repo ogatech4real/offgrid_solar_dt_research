@@ -332,7 +332,39 @@ def main() -> None:
     ap.add_argument("--openai_api_key", type=str, default=None)
     ap.add_argument("--openai_model", type=str, default="gpt-4o-mini")
 
+    if len(sys.argv) == 1:
+    # ----------------------------
+    # DEV / PYCHARM DEFAULTS
+    # ----------------------------
+    class DevArgs:
+        ukdale_root = "/absolute/path/to/UKDALE"
+        house_id = "1"
+        start_date = "2014-01-01"
+        end_date = "2014-01-14"
+        resample_minutes = 15
+        timezone = "Europe/London"
+        critical_baseline_kw = 0.15
+
+        location_name = "Middlesbrough (UK)"
+        lat = 54.5742
+        lon = -1.2350
+        pv_kw = 3.0
+        pv_eff = 0.18
+        bat_kwh = 5.0
+        inv_kw = 2.5
+        soc_init = 0.7
+        soc_min = 0.25
+        soc_max = 0.95
+
+        controller = "forecast_heuristic"
+        out = "outputs/validation"
+        openai_api_key = None
+        openai_model = "gpt-4o-mini"
+
+    args = DevArgs()
+else:
     args = ap.parse_args()
+
 
     out_root = Path(args.out).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
