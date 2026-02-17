@@ -1,30 +1,13 @@
 # src/offgrid_dt/validation/metrics_summary.py
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
 
-@dataclass(frozen=True)
-class DailyMetrics:
-    date: str
-    clsr: float
-    cid_minutes: float
-    ssr: float
-    solar_utilisation: float
-    battery_throughput_kwh: Optional[float] = None
-
-
 def _infer_dt_minutes(df: pd.DataFrame) -> int:
-    # prefer explicit config column if present; else infer from timestamps
-    if "timestep_minutes" in df.columns:
-        try:
-            return int(df["timestep_minutes"].iloc[0])
-        except Exception:
-            pass
     if "timestamp" not in df.columns or len(df) < 2:
         return 15
     ts = pd.to_datetime(df["timestamp"], utc=True, errors="coerce").dropna()
@@ -43,14 +26,16 @@ def _get_col(df: pd.DataFrame, candidates: Tuple[str, ...]) -> Optional[str]:
 
 def compute_daily_metrics_from_state_csv(state_csv: Path) -> pd.DataFrame:
     """
-    Expects the simulator state CSV (RunLogger output).
-    Computes daily CLSR, CID, SSR, Solar Utilisation (SU), and Battery Throughput when available.
-
-    Robust to slightly different column names.
+    Computes daily metrics from RunLogger state CSV:
+      - CLSR
+      - CID (minutes)
+      - SSR
+      - SU (solar utilisation, proxy)
+      - battery throughput if logged (optional)
     """
     df = pd.read_csv(state_csv)
     if "timestamp" not in df.columns:
-        raise ValueError(f"state_csv missing 'timestamp' column: {state_csv}")
+        raise ValueError(f"state_csv missing 'timestamp': {state_csv}")
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
@@ -59,110 +44,82 @@ def compute_daily_metrics_from_state_csv(state_csv: Path) -> pd.DataFrame:
     dt_min = _infer_dt_minutes(df)
     dt_h = dt_min / 60.0
 
-    col_crit_req = _get_col(df, ("crit_requested_kw", "critical_requested_kw"))
-    col_crit_srv = _get_col(df, ("crit_served_kw", "critical_served_kw"))
-    col_load_req = _get_col(df, ("load_requested_kw", "total_requested_kw"))
-    col_load_srv = _get_col(df, ("load_served_kw", "total_served_kw"))
-    col_pv = _get_col(df, ("pv_now_kw", "pv_kw"))
-    col_curtailed = _get_col(df, ("curtailed_solar_kw", "curtailed_kw"))
-    # battery throughput might be logged as a running KPI or explicit column
-    col_bt = _get_col(df, ("battery_throughput_kwh", "throughput_kwh"))
+    col_crit_req = _get_col(df, ("crit_requested_kw",))
+    col_crit_srv = _get_col(df, ("crit_served_kw",))
+    col_load_req = _get_col(df, ("load_requested_kw",))
+    col_load_srv = _get_col(df, ("load_served_kw",))
+    col_pv = _get_col(df, ("pv_now_kw",))
+    col_bt = _get_col(df, ("throughput_kwh", "battery_throughput_kwh"))
 
     required = [col_crit_req, col_crit_srv, col_load_req, col_load_srv, col_pv]
     if any(c is None for c in required):
         raise ValueError(
-            f"state_csv missing required columns. "
-            f"Need crit_req/crit_serv/load_req/load_serv/pv. Found columns: {list(df.columns)}"
+            "Missing required columns in state CSV. "
+            f"Need crit_requested_kw, crit_served_kw, load_requested_kw, load_served_kw, pv_now_kw. "
+            f"Found: {list(df.columns)}"
         )
 
-    out_rows = []
+    rows = []
     for d, g in df.groupby("date"):
         crit_req_e = (g[col_crit_req].astype(float).clip(lower=0.0) * dt_h).sum()
         crit_srv_e = (g[col_crit_srv].astype(float).clip(lower=0.0) * dt_h).sum()
-
-        # CLSR
         clsr = float(crit_srv_e / crit_req_e) if crit_req_e > 1e-9 else 1.0
 
-        # CID: time steps where critical not fully served
         cid_steps = (g[col_crit_srv].astype(float) + 1e-9) < g[col_crit_req].astype(float)
         cid_minutes = float(cid_steps.sum() * dt_min)
 
-        # SSR (intrinsic adequacy): PV energy / requested energy
         pv_e = (g[col_pv].astype(float).clip(lower=0.0) * dt_h).sum()
         load_req_e = (g[col_load_req].astype(float).clip(lower=0.0) * dt_h).sum()
         ssr = float(pv_e / load_req_e) if load_req_e > 1e-9 else 0.0
 
-        # Solar utilisation: energy served directly from PV / PV energy
-        # Approximation: served_from_pv = min(pv_now, load_served) each step
         served_from_pv_e = (g[[col_pv, col_load_srv]].astype(float).min(axis=1).clip(lower=0.0) * dt_h).sum()
         su = float(served_from_pv_e / pv_e) if pv_e > 1e-9 else 0.0
 
         bt = None
         if col_bt:
             try:
-                # if it's running total in each row, take last value for that day
                 bt = float(g[col_bt].astype(float).iloc[-1])
             except Exception:
                 bt = None
 
-        out_rows.append(
-            DailyMetrics(
-                date=d,
-                clsr=clsr,
-                cid_minutes=cid_minutes,
-                ssr=ssr,
-                solar_utilisation=su,
-                battery_throughput_kwh=bt,
-            ).__dict__
+        rows.append(
+            {
+                "date": d,
+                "clsr": clsr,
+                "cid_minutes": cid_minutes,
+                "ssr": ssr,
+                "solar_utilisation": su,
+                "battery_throughput_kwh": bt,
+            }
         )
 
-    return pd.DataFrame(out_rows).sort_values("date")
+    return pd.DataFrame(rows).sort_values("date")
 
 
-def save_metrics_and_basic_plots(metrics_df: pd.DataFrame, out_dir: Path) -> Dict[str, str]:
-    """
-    Saves metrics CSV and basic matplotlib plots to out_dir.
-    """
+def save_metrics_and_plots(metrics_df: pd.DataFrame, out_dir: Path) -> Dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = out_dir / "ukdale_validation_daily_metrics.csv"
-    metrics_df.to_csv(csv_path, index=False)
 
-    # plots (matplotlib only)
-    import matplotlib.pyplot as plt  # local import by design
+    metrics_csv = out_dir / "ukdale_validation_daily_metrics.csv"
+    metrics_df.to_csv(metrics_csv, index=False)
 
-    paths: Dict[str, str] = {"metrics_csv": str(csv_path)}
+    import matplotlib.pyplot as plt
 
-    # CLSR
-    plt.figure()
-    plt.plot(pd.to_datetime(metrics_df["date"]), metrics_df["clsr"])
-    plt.xlabel("Date")
-    plt.ylabel("CLSR")
-    plt.tight_layout()
-    p = out_dir / "clsr_timeseries.png"
-    plt.savefig(p, dpi=200)
-    plt.close()
-    paths["clsr_plot"] = str(p)
+    artifacts: Dict[str, str] = {"metrics_csv": str(metrics_csv)}
 
-    # CID
-    plt.figure()
-    plt.plot(pd.to_datetime(metrics_df["date"]), metrics_df["cid_minutes"])
-    plt.xlabel("Date")
-    plt.ylabel("CID (minutes)")
-    plt.tight_layout()
-    p = out_dir / "cid_timeseries.png"
-    plt.savefig(p, dpi=200)
-    plt.close()
-    paths["cid_plot"] = str(p)
+    for col, fname, ylabel in [
+        ("clsr", "clsr_timeseries.png", "CLSR"),
+        ("cid_minutes", "cid_timeseries.png", "CID (minutes)"),
+        ("ssr", "ssr_timeseries.png", "SSR"),
+        ("solar_utilisation", "su_timeseries.png", "Solar utilisation (proxy)"),
+    ]:
+        plt.figure()
+        plt.plot(pd.to_datetime(metrics_df["date"]), metrics_df[col])
+        plt.xlabel("Date")
+        plt.ylabel(ylabel)
+        plt.tight_layout()
+        p = out_dir / fname
+        plt.savefig(p, dpi=200)
+        plt.close()
+        artifacts[col] = str(p)
 
-    # SSR
-    plt.figure()
-    plt.plot(pd.to_datetime(metrics_df["date"]), metrics_df["ssr"])
-    plt.xlabel("Date")
-    plt.ylabel("SSR")
-    plt.tight_layout()
-    p = out_dir / "ssr_timeseries.png"
-    plt.savefig(p, dpi=200)
-    plt.close()
-    paths["ssr_plot"] = str(p)
-
-    return paths
+    return artifacts
