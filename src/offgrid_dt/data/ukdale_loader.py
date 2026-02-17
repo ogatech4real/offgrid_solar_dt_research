@@ -154,3 +154,74 @@ def align_day_to_full_steps(
 
     aligned = day_series_kw.reindex(full_local).ffill().bfill()
     return full_local, [float(v) for v in aligned.values]
+
+# ------------------------------------------------------------
+# Wrapper expected by simulator (research mode integration)
+# ------------------------------------------------------------
+
+from datetime import datetime
+from typing import List, Tuple
+
+def load_ukdale_day_profile(
+    ukdale_cfg: UKDALEConfig,
+    day_start_utc: datetime,
+    steps_per_day: int,
+    timestep_minutes: int,
+) -> Tuple[List[float], List[float]]:
+    """
+    Adapter for simulator research mode.
+
+    Returns:
+        total_kw: measured whole-home demand aligned to fixed 24h grid
+        crit_kw:  fixed critical baseline split per step
+
+    Notes:
+        - Uses UKDALEConfig.start_date/end_date window.
+        - Day selection is done in reporting timezone (default Europe/London).
+        - Simulator operates in UTC; demand slicing is done in local tz
+          then aligned to fixed timestep grid.
+    """
+
+    # Load full validation window once
+    series_kw = load_ukdale_aggregate_kw(ukdale_cfg)
+
+    if series_kw.empty:
+        raise ValueError("UK-DALE aggregate series is empty after slicing window.")
+
+    # Convert to reporting timezone for day slicing
+    tz = ukdale_cfg.timezone or "Europe/London"
+    s_local = series_kw.tz_convert(tz)
+
+    # Determine target local date corresponding to simulator UTC day
+    target_local_date = (
+        pd.Timestamp(day_start_utc, tz="UTC")
+        .tz_convert(tz)
+        .date()
+    )
+
+    # Extract matching day
+    day_series = s_local[s_local.index.date == target_local_date]
+
+    if day_series.empty:
+        raise ValueError(
+            f"No UK-DALE data found for local day {target_local_date}"
+        )
+
+    # Align to full fixed grid
+    _, total_kw = align_day_to_full_steps(
+        day_series_kw=day_series,
+        timestep_minutes=timestep_minutes,
+        tz=tz,
+    )
+
+    if len(total_kw) != steps_per_day:
+        # Defensive guard (should not happen with align_day_to_full_steps)
+        total_kw = total_kw[:steps_per_day]
+        if len(total_kw) < steps_per_day:
+            total_kw += [0.0] * (steps_per_day - len(total_kw))
+
+    # Split into critical + discretionary using fixed baseline
+    crit_base = float(ukdale_cfg.critical_baseline_kw)
+    crit_kw = [min(v, crit_base) for v in total_kw]
+
+    return total_kw, crit_kw
