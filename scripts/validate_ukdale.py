@@ -1,8 +1,7 @@
-# Validate UK Dale
+# Validate UKDALE Data
 
-# This script validates the UK Dale dataset.
+# ----------------------------
+# Journal placeholder figures
+# ----------------------------
 
-     # The following functions check the integrity of the dataset.
-
-# Function to check for missing values
-# Function to check for duplicate entries
+# Code continues here...
