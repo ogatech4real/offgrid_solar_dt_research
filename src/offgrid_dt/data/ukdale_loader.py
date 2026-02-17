@@ -225,3 +225,38 @@ def load_ukdale_day_profile(
     crit_kw = [min(v, crit_base) for v in total_kw]
 
     return total_kw, crit_kw
+
+from datetime import datetime, timedelta, timezone
+
+def load_ukdale_day_profile(
+    ukdale_cfg: UKDALEConfig,
+    day_start_utc: datetime,
+    steps_per_day: int,
+    timestep_minutes: int,
+) -> Tuple[List[float], List[float]]:
+    """
+    Return (total_kw, crit_kw) arrays for a single day aligned to simulator steps.
+    Crit is a fixed baseline (ukdale_cfg.critical_baseline_kw) capped by total.
+    """
+    if day_start_utc.tzinfo is None:
+        day_start_utc = day_start_utc.replace(tzinfo=timezone.utc)
+
+    # Load full aggregate series for configured window (cached externally if you want performance later)
+    agg_kw = load_ukdale_aggregate_kw(ukdale_cfg)  # UTC indexed series
+
+    day_end_utc = day_start_utc + timedelta(days=1)
+    day_kw = agg_kw.loc[day_start_utc: day_end_utc - timedelta(seconds=1)]
+
+    if day_kw.empty:
+        raise ValueError(f"No UK-DALE data for day starting {day_start_utc.isoformat()}")
+
+    # Align to full-day grid (use UK reporting TZ by default, but keep values aligned to day)
+    tz = ukdale_cfg.timezone or "UTC"
+    _, total = align_day_to_full_steps(day_kw, timestep_minutes=timestep_minutes, tz=tz)
+
+    total = total[:steps_per_day] if len(total) >= steps_per_day else (total + [total[-1]] * (steps_per_day - len(total)))
+
+    crit_base = float(ukdale_cfg.critical_baseline_kw)
+    crit = [min(v, crit_base) if v >= 0 else 0.0 for v in total]
+
+    return total, crit
