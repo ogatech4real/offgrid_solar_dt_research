@@ -1,136 +1,202 @@
-# Off-Grid Solar Energy Planner
+# Solar-First Off-Grid PV–Battery Planning Framework
 
-An **advisory digital twin** for **day-ahead household energy planning** in off-grid or weak-grid settings. It uses **NASA POWER** solar data, simulates PV–battery–load over 15‑minute steps, and delivers clear day-ahead outlook, statement-list advice, and downloadable plans (CSV, JSONL, PDF).
+## Overview
 
----
+This repository contains the implementation of a **solar-first, day-ahead adequacy assessment and explainable planning framework** for off-grid photovoltaic–battery household energy systems.
 
-## What you get
-
-- **Day-ahead planning (00:00–24:00)** — Expected solar vs your selected load; surplus/deficit windows; risk and capability statements.
-- **NASA POWER solar** — Physics-based GHI for reproducibility; OpenWeather only for location and current weather.
-- **Streamlit dashboard** — Warm UI, replay over time, KPIs, recommendation per step, appliance advice as a **statement list** (not per-appliance “avoid today” table).
-- **Pluggable controllers** — `naive`, `rule_based`, `static_priority`, **`forecast_heuristic`** (default).
-- **Logs and PDF** — State CSV, guidance JSONL, and a two-day PDF plan for handouts and review.
-
-**Advisory only** — no automatic switching; user stays in control. Suitable for **academic** evaluation (KPIs, ablation, reproducible solar) and **industry** prototyping (clear contracts, path to HIL/live telemetry).
+The framework is designed to support **grid-independent energy users** in making informed daily decisions under variable solar availability. It combines a lightweight digital twin, deterministic demand–solar matching, and an explainable advisory layer to translate system conditions into actionable household guidance.
 
 ---
 
-## Repository structure
+## 📄 Manuscript Status
 
-```
-offgrid_solar_dt/
-  streamlit_app/
-    app.py                    # Streamlit UI (adds src/ to path, runs simulate + matching)
-  src/offgrid_dt/
-    dt/                       # Simulator + physical models
-      simulator.py            # Time-stepped run; NASA POWER PV; matching_first_day
-      battery.py, load.py
-    forecast/
-      nasa_power.py           # NASA POWER GHI for next planning day(s)
-      openweather.py         # Geocoding + current weather only
-      pv_power.py            # Irradiance → PV power
-    control/
-      controllers.py         # naive, rule_based, static_priority, forecast_heuristic
-    matching/
-      day_ahead.py            # compute_day_ahead_matching, format_day_ahead_statements
-    xai/
-      explain.py             # Deterministic guidance + optional OpenAI rewrite
-    metrics/
-      kpis.py                # CLSR, blackout, SAR, battery throughput
-    io/
-      schema.py, logger.py, pdf_report.py
-  scripts/
-    run_simulation.py        # CLI batch run (all controllers, writes logs)
-  tests/
-    test_*.py                # Battery, forecast resolution, NASA parse, simulation smoke
-  docs/                      # Full project documentation (see below)
-  .streamlit/
-    config.toml              # Theme (warm colours); secrets.template.toml
-  requirements.txt, pyproject.toml
-```
+The research work associated with this repository is currently **under peer review** in an international journal.
 
-**Security:** Engine under `src/offgrid_dt/`; secrets via Streamlit secrets only; no secrets in logs.
+* Journal: *Sustainable Energy, Grids and Networks (Elsevier)*
+* Status: *Under Review*
+* Title: *Solar-First Day-Ahead Adequacy Assessment for Off-Grid PV–Battery Systems*
+
+This repository serves as the **official implementation and reproducibility companion** to the manuscript.
+
+Updates will be provided upon completion of the review process.
 
 ---
 
-## Quick start
+## 🔍 Core Concept
 
-### 1. Install
+Unlike conventional energy management systems that focus on optimisation or automated control, this framework:
+
+* Separates **intrinsic solar adequacy** from controller behaviour
+* Provides **day-ahead feasibility signals** based on solar availability
+* Translates system conditions into **interpretable, user-facing guidance**
+* Operates in **advisory mode**, without requiring automation or hardware control
+
+The goal is to improve **energy reliability, utilisation, and decision-making** in decentralised and resource-constrained environments.
+
+---
+
+## ⚙️ Key Features
+
+### 1. Digital Twin Simulation Engine
+
+* Time-stepped PV–battery household model
+* SOC dynamics with operational constraints
+* Multiple dispatch heuristic strategies
+
+### 2. Deterministic Adequacy Assessment
+
+* Solar Supply Ratio (SSR)
+* Daily energy margin
+* Surplus and deficit window extraction
+
+### 3. Explainable Advisory Layer
+
+* Rule-based guidance generation
+* Traceable reason codes (e.g., LOW_SOC, PV_SURPLUS)
+* Appliance-level scheduling recommendations
+
+### 4. Dual Execution Modes
+
+* **Interactive dashboard** (Streamlit)
+* **Batch validation pipeline** for reproducible experiments
+
+### 5. Real Data Validation
+
+* Integration with **UK-DALE aggregate residential demand dataset**
+* Multi-day validation of adequacy–reliability behaviour
+
+---
+
+## 🧪 Validation Scope
+
+The framework has been evaluated across:
+
+* Multiple geographic solar regimes
+* Controlled scenario-based household demand
+* Empirical aggregate residential demand (UK-DALE)
+
+The results demonstrate stable coupling between:
+
+* **Solar adequacy (SSR)**
+* **Reliability metrics (CLSR, CID)**
+* **User-facing advisory outputs**
+
+---
+
+## 🚀 Getting Started
+
+### Requirements
+
+* Python 3.10+
+* Recommended: virtual environment
+
+### Installation
 
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Unix:    source .venv/bin/activate
+git clone https://github.com/ogatech4real/offgrid_solar_dt.git
+cd offgrid_solar_dt
 pip install -r requirements.txt
 ```
 
-### 2. Secrets (optional)
+---
 
-Copy `.streamlit/secrets.template.toml` to `.streamlit/secrets.toml`:
+## 💻 Usage
 
-- `openweather_api_key` — geocoding and current weather.
-- `openai_api_key` (optional) — clearer explanation wording; decisions stay deterministic.
-
-### 3. Run the app
+### 1. Run Interactive Dashboard
 
 ```bash
-streamlit run streamlit_app/app.py
+streamlit run app.py
 ```
 
-Use **Run my plan** or **Try a quick demo (2 days)** to see the day-ahead outlook and statement-list advice.
-
-### 4. CLI batch (reproducible runs)
-
-From repo root, set `PYTHONPATH` so `src` is importable, then run:
-
-- **Windows PowerShell:** `$env:PYTHONPATH = "src"; python scripts/run_simulation.py --days 2 --out logs`
-- **Unix / Bash:** `export PYTHONPATH=src && python scripts/run_simulation.py --days 2 --out logs`
-
-Outputs: `logs/run_<controller>/<controller>_2d_state.csv`, `*_guidance.jsonl`, and matching in the returned dict.
-
----
-
-## Integrity checks
+### 2. Run Validation Pipeline
 
 ```bash
-python -m compileall -q src
-# Set PYTHONPATH first (Windows: $env:PYTHONPATH = "src"; Unix: export PYTHONPATH=src)
-python -m pytest tests -q
-python scripts/run_simulation.py --days 2 --out logs_smoke
+python scripts/validate_ukdale.py
+```
+
+Outputs include:
+
+* State logs (CSV)
+* Guidance logs (JSONL)
+* Planning reports (PDF)
+
+---
+
+## 📊 Outputs
+
+Each simulation produces structured artefacts:
+
+* **State logs**: PV, SOC, load, dispatch actions
+* **Guidance logs**: recommendations, risk levels, reason codes
+* **Planning reports**: day-ahead summaries and schedules
+
+All outputs are deterministic and reproducible.
+
+---
+
+## 🧭 Positioning
+
+This work is positioned as a **planning and adequacy assessment framework**, not a control optimisation system.
+
+It is particularly suited for:
+
+* Off-grid and weak-grid households
+* Energy access applications
+* Sustainability-focused system design
+* Human-centred energy decision support
+
+---
+
+## 🔗 Live Demo
+
+Interactive dashboard:
+https://offgridsolardt.streamlit.app/
+
+---
+
+## 📦 Repository Structure
+
+```
+offgrid_solar_dt/
+│
+├── app.py                  # Streamlit interface
+├── scripts/                # Validation and batch processing
+├── core/                   # Simulation engine
+├── data/                   # Input datasets
+├── outputs/                # Generated results
+├── reports/                # PDF planning reports
+└── README.md
 ```
 
 ---
 
-## Documentation
+## 📢 Disclaimer
 
-| Document | Purpose |
-|---------|--------|
-| [docs/PROJECT_DOCUMENTATION.md](docs/PROJECT_DOCUMENTATION.md) | **Full project reference** — architecture, modules, data flow, config, UI, matching, PDF, tests, deployment, upgrade. |
-| [docs/APP_PURPOSE_AND_ACHIEVEMENTS.md](docs/APP_PURPOSE_AND_ACHIEVEMENTS.md) | What the app does and achieves (industry & academic). |
-| [docs/CODEBASE_AUDIT_DATA_SOURCES.md](docs/CODEBASE_AUDIT_DATA_SOURCES.md) | Trace of every UI display to its data source (no orphan displays). |
-| [docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md](docs/INTERFACE_MANUSCRIPT_ALIGNMENT.md) | Interface intent and handover rules. |
-| [docs/OVERHAUL_ALIGNMENT_AUDIT.md](docs/OVERHAUL_ALIGNMENT_AUDIT.md) | Post–NASA POWER and matching feature alignment. |
+This repository represents a **research prototype** intended for:
 
----
+* academic validation
+* methodological development
+* reproducibility support
 
-## KPIs
-
-- **Critical Load Supply Ratio (CLSR)** — How consistently essentials are powered.
-- **Blackout time** — Minutes of unserved critical load.
-- **Solar Autonomy Ratio (SAR)** — Share of demand met by solar.
-- **Battery throughput** — Charge/discharge (wear proxy).
+It is not yet optimised for production deployment.
 
 ---
 
-## Limitations
+## 📬 Contact
 
-- Solar from NASA POWER (or synthetic fallback if API unavailable); accuracy depends on location and conditions.
-- Battery ageing is a throughput proxy only.
-- Loads are task-based (scheduling); not full appliance transient physics.
+**Adewale Ogabi**
+Email: [hello@adewaleogabi.info](mailto:hello@adewaleogabi.info)
+
+---
+
+## 📌 Citation (to be updated)
+
+A formal citation will be provided once the manuscript completes peer review.
 
 ---
 
 ## License
 
-MIT (adjust if your institution requires).
+This project is released under an open-source license (see LICENSE file).
+
+---
